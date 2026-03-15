@@ -1,0 +1,11 @@
+const r = require("express").Router();
+const c = require("../controllers/transferController");
+const auth = require("../middleware/authMiddleware");
+r.get("/stats",          auth, c.stats);
+r.get("/suggest",        auth, c.suggest);
+r.get("/",               auth, c.getAll);
+r.get("/:id",            auth, c.getOne);
+r.post("/",              auth, c.create);
+r.patch("/:id/status",   auth, c.updateStatus);
+module.exports = r;
+
