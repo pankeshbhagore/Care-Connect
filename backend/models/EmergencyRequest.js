@@ -8,21 +8,42 @@ const emergencyRequestSchema = new mongoose.Schema({
   patientAge:   { type: Number, default: 0 },
   patientPhone: { type: String, default: "" },
   description:  { type: String, default: "" },
+  requiredFacilities: [{ type: String }],   // ["ICU","Ventilator","Trauma","BloodBank"]
+
   location: {
     lat:     { type: Number, required: true },
     lng:     { type: Number, required: true },
     address: { type: String, default: "" },
   },
-  reportedBy:   { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-  assignedHospital: { type: mongoose.Schema.Types.ObjectId, ref: "Hospital", default: null },
-  assignedAmbulance:{ type: mongoose.Schema.Types.ObjectId, ref: "Ambulance", default: null },
-  status:       { type: String, enum: ["Reported","Dispatched","EnRoute","OnScene","Transferred","Resolved","Cancelled"], default: "Reported" },
-  dispatchedAt: { type: Date, default: null },
-  arrivedAt:    { type: Date, default: null },
-  resolvedAt:   { type: Date, default: null },
+
+  // Citizen reporter (optional - no login required)
+  reportedBy:    { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  reporterPhone: { type: String, default: "" },
+  reporterName:  { type: String, default: "" },
+
+  assignedHospital:  { type: mongoose.Schema.Types.ObjectId, ref: "Hospital", default: null },
+  assignedAmbulance: { type: mongoose.Schema.Types.ObjectId, ref: "Ambulance", default: null },
+
+  // Smart dispatch flow
+  status: { type: String, enum: ["Reported","AmbulanceRequested","AmbulanceAccepted","EnRoute","OnScene","TransportingToHospital","HospitalAlerted","Resolved","Cancelled"], default: "Reported" },
+
+  dispatchedAt:     { type: Date, default: null },
+  ambulanceAcceptedAt: { type: Date, default: null },
+  arrivedAtPatientAt:  { type: Date, default: null },
+  arrivedAtHospitalAt: { type: Date, default: null },
+  resolvedAt:       { type: Date, default: null },
   responseTimeMinutes: { type: Number, default: 0 },
+
+  // Hospital pre-alert
+  hospitalAlertSent:    { type: Boolean, default: false },
+  hospitalAlertMessage: { type: String, default: "" },
+  estimatedArrivalTime: { type: Number, default: 0 }, // minutes
+
+  // Route/tracking
+  routePoints: [{ lat: Number, lng: Number, ts: Date }],
+
   aiRecommendation: { type: String, default: "" },
-  notes:        [{ text: String, by: String, at: { type: Date, default: Date.now } }],
+  notes: [{ text: String, by: String, at: { type: Date, default: Date.now } }],
 }, { timestamps: true });
 
 module.exports = mongoose.model("EmergencyRequest", emergencyRequestSchema);

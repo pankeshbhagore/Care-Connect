@@ -8,4 +8,3 @@ r.get("/:id",            auth, c.getOne);
 r.post("/",              auth, c.create);
 r.patch("/:id/status",   auth, c.updateStatus);
 module.exports = r;
-

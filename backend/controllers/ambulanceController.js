@@ -58,4 +58,3 @@ exports.remove = async (req, res) => {
     res.json({ message: "Deleted" });
   } catch (e) { res.status(500).json({ error: e.message }); }
 };
-

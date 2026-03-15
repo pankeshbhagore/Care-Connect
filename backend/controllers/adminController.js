@@ -27,11 +27,14 @@ exports.getUsers = async (req, res) => {
 
 exports.createUser = async (req, res) => {
   try {
-    const { name, email, password, role, phone, department, badgeNumber } = req.body;
+    const { name, email, password, role, phone, department, badgeNumber, hospitalId, ambulanceId } = req.body;
     if (!name||!email||!password) return res.status(400).json({ message:"name, email, password required" });
     if (await User.findOne({ email:email.toLowerCase() })) return res.status(400).json({ message:"Email exists" });
     const hashed = await bcrypt.hash(password, 12);
-    const user = await User.create({ name, email:email.toLowerCase(), password:hashed, role:role||"Operator", phone:phone||"", department:department||"", badgeNumber:badgeNumber||"", accountStatus:"active", isActive:true, createdBy:req.user.id });
+    const userData = { name, email:email.toLowerCase(), password:hashed, role:role||"Operator", phone:phone||"", department:department||"", badgeNumber:badgeNumber||"", accountStatus:"active", isActive:true, createdBy:req.user.id };
+    if(hospitalId)  userData.hospitalId  = hospitalId;
+    if(ambulanceId) userData.ambulanceId = ambulanceId;
+    const user = await User.create(userData);
     res.status(201).json({ message:"Created", user:{ ...user.toObject(), password:undefined } });
   } catch(e){ res.status(500).json({ error:e.message }); }
 };
@@ -56,8 +59,27 @@ exports.getStats = async (req, res) => {
   try {
     const [users, hospitals] = await Promise.all([User.find().lean(), Hospital.find().lean()]);
     res.json({
-      users:{ total:users.length, admins:users.filter(u=>u.role==="Admin").length, operators:users.filter(u=>u.role==="Operator").length, citizens:users.filter(u=>u.role==="Citizen").length },
+      users:{ total:users.length, admins:users.filter(u=>u.role==="Admin").length, centralAuth:users.filter(u=>u.role==="CentralAuthority").length, hospitalOps:users.filter(u=>u.role==="HospitalOperator").length, ambulanceOps:users.filter(u=>u.role==="AmbulanceOperator").length, operators:users.filter(u=>u.role==="Operator").length, citizens:users.filter(u=>u.role==="Citizen").length },
       hospitals:{ total:hospitals.length, active:hospitals.filter(h=>h.status==="Active").length, overwhelmed:hospitals.filter(h=>h.status==="Overwhelmed").length },
     });
+  } catch(e){ res.status(500).json({ error:e.message }); }
+};
+
+// Additional admin endpoints
+exports.assignHospitalOperator = async (req, res) => {
+  try {
+    const { userId, hospitalId } = req.body;
+    const user = await User.findByIdAndUpdate(userId, { role:"HospitalOperator", hospitalId }, { new:true }).select("-password");
+    if(!user) return res.status(404).json({ message:"User not found" });
+    res.json(user);
+  } catch(e){ res.status(500).json({ error:e.message }); }
+};
+
+exports.assignAmbulanceOperator = async (req, res) => {
+  try {
+    const { userId, ambulanceId } = req.body;
+    const user = await User.findByIdAndUpdate(userId, { role:"AmbulanceOperator", ambulanceId }, { new:true }).select("-password");
+    if(!user) return res.status(404).json({ message:"User not found" });
+    res.json(user);
   } catch(e){ res.status(500).json({ error:e.message }); }
 };

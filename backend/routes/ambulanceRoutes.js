@@ -8,4 +8,3 @@ r.put("/:id",                   auth, c.update);
 r.patch("/:id/location",        auth, c.updateLocation);
 r.delete("/:id",                auth, c.remove);
 module.exports = r;
-

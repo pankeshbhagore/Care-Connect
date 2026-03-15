@@ -203,3 +203,23 @@ exports.resolveAlert = async (req, res) => {
     res.json(a);
   } catch (e) { res.status(500).json({ error: e.message }); }
 };
+
+// ── PUBLIC: Citizens can see hospital list with resources ─────
+exports.getPublicList = async (req, res) => {
+  try {
+    const hospitals = await Hospital.find({ status:{ $ne:"Offline" } })
+      .select("name type level location contact resources status alertLevel specialties traumaCenter lastUpdated")
+      .sort({ name:1 }).lean();
+    res.json(hospitals);
+  } catch(e){ res.status(500).json({ error:e.message }); }
+};
+
+exports.getPublicOne = async (req, res) => {
+  try {
+    const h = await Hospital.findById(req.params.id)
+      .select("name type level location contact resources status alertLevel specialties traumaCenter avgPatientWait lastUpdated")
+      .lean();
+    if(!h) return res.status(404).json({ message:"Not found" });
+    res.json(h);
+  } catch(e){ res.status(500).json({ error:e.message }); }
+};

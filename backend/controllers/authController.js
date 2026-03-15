@@ -36,7 +36,7 @@ exports.login = async (req, res) => {
       return res.status(403).json({ message: "Account suspended. Contact administrator.", suspended: true });
     user.lastLogin = new Date(); user.loginCount = (user.loginCount||0)+1;
     await user.save();
-    res.json({ token: signToken(user), role: user.role, name: user.name, email: user.email, phone: user.phone||"", userId: user._id });
+    res.json({ token: signToken(user), role: user.role, name: user.name, email: user.email, phone: user.phone||"", userId: user._id, hospitalId: user.hospitalId?.toString()||null, ambulanceId: user.ambulanceId?.toString()||null });
   } catch (err) { res.status(500).json({ error: "Login failed" }); }
 };
 
