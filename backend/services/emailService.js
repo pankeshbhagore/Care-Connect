@@ -11,7 +11,7 @@ function getTransporter() {
   if (transporter) return transporter;
   
   // Check if email is configured
-  if (!process.env.EMAIL_USER || process.env.EMAIL_PASS === "your_app_password_here") {
+  if (!process.env.EMAIL_USER || process.env.EMAIL_PASS === "ldbm uyhk mtqa zoko") {
     console.warn("[Email] Not configured — using Ethereal (test) transport");
     return null;
   }

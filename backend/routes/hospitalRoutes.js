@@ -30,3 +30,4 @@ r.delete("/:id",               auth, safe("remove",        c.remove));
 r.patch("/alerts/:id/resolve", auth, safe("resolveAlert",  c.resolveAlert));
 
 module.exports = r;
+

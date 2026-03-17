@@ -168,7 +168,7 @@ export default function App() {
             <div><div className="logo" style={{fontSize:14}}>HOSPITAL PORTAL</div><div className="tagline" style={{fontSize:9}}>{auth.name} · {clock.toLocaleTimeString()}</div></div>
           </div>
           <div className="header-actions">
-            <span className="role-pill" style={{background:"rgba(0,230,118,.12)",color:"var(--green)",border:"1px solid rgba(0,230,118,.25)"}}>🏥 HOSPITAL OPERATOR</span>
+            <span className="role-pill" style={{background:"rgba(0,230,118,.12)",color:"var(--green)",border:"1px solid rgba(0,230,118,.25)"}}>🏥 HOSPITAL </span>
             <button className="theme-toggle" onClick={toggleTheme}/>
             <button className="btn btn-ghost btn-sm" onClick={logout}>Logout</button>
           </div>
