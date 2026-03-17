@@ -5,7 +5,7 @@ import "leaflet/dist/leaflet.css";
 import api from "../services/api";
 import socket from "../services/socket";
 import { reverseGeocode, forwardGeocode } from "../services/geocode";
-import AIChatbot from "../components/AIChatbot";
+import AIChatbot from "../components/AIChatBot";
 import LiveTrackingMap from "../components/LiveTrackingMap";
 import { AppointmentModal } from "../components/AppointmentBooking";
 
