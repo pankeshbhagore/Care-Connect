@@ -13,6 +13,13 @@ L.Icon.Default.mergeOptions({
 });
 
 const ALERT_COLOR = { Red:"#ff4060", Orange:"#ff8f00", Yellow:"#ffd600", Normal:"#00e676" };
+const TILE_URLS = {
+  street:  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  dark:    "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+  smooth:  "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+  topo:    "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+};
+
 const pct = (a,t) => t>0 ? Math.round((a/t)*100) : 0;
 const barClr = p => p>50?"var(--green)":p>25?"var(--yellow)":"var(--red)";
 const fmtAgo = dt => { if(!dt) return "—"; const m=Math.floor((Date.now()-new Date(dt))/60000); return m<1?"just now":m<60?`${m}m ago`:`${Math.floor(m/60)}h ago`; };
@@ -231,6 +238,7 @@ export default function HospitalsPanel() {
   const [updateH,setUpdateH]=useState(null);
   const [detailH,setDetailH]=useState(null);
   const [showAdd,setShowAdd]=useState(false);
+  const [mapTile,setMapTile]=useState("street");
   const [toast,setToast]=useState(null);
 
   const showToast=(msg,type="success")=>{ setToast({msg,type}); setTimeout(()=>setToast(null),3500); };
@@ -375,9 +383,15 @@ export default function HospitalsPanel() {
 
       {/* Map View */}
       {view==="map"&&(
+        <div>
+          <div style={{display:"flex",gap:6,marginBottom:8}}>
+            {Object.entries({street:"🗺 Street",dark:"🌑 Dark",smooth:"🎨 Smooth",topo:"🏔 Topo"}).map(([k,l])=>(
+              <button key={k} className={`btn btn-sm ${mapTile===k?"btn-primary":"btn-ghost"}`} onClick={()=>setMapTile(k)}>{l}</button>
+            ))}
+          </div>
         <div style={{borderRadius:"var(--radius-lg)",overflow:"hidden",border:"1px solid var(--border)",height:560,position:"relative"}}>
           <MapContainer center={[23.5,79.5]} zoom={7} style={{height:"100%",width:"100%",background:"#0a1628"}}>
-            <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" attribution="© CartoDB"/>
+            <TileLayer url={TILE_URLS[mapTile]} attribution="© OpenStreetMap"/>
             {hospitals.map(h=>h.location?.lat&&(
               <Marker key={h._id} position={[h.location.lat,h.location.lng]} icon={createHospitalIcon(h)}>
                 <Popup>
@@ -403,6 +417,7 @@ export default function HospitalsPanel() {
             ))}
           </div>
         </div>
+      </div>
       )}
 
       {updateH&&<UpdateModal h={updateH} onClose={()=>setUpdateH(null)} onSave={saveResources}/>}

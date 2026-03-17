@@ -6,5 +6,3 @@ r.post("/login",    c.login);
 r.get("/profile",   auth, c.getProfile);
 r.put("/profile",   auth, c.updateProfile);
 module.exports = r;
-
-

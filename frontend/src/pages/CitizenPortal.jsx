@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { MapContainer, TileLayer, Marker, Popup, CircleMarker } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, CircleMarker, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import api from "../services/api";
 import socket from "../services/socket";
+import { reverseGeocode, forwardGeocode } from "../services/geocode";
+import AIChatbot from "../components/AIChatBot";
+import LiveTrackingMap from "../components/LiveTrackingMap";
+import { AppointmentModal } from "../components/AppointmentBooking";
 
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -12,141 +16,187 @@ L.Icon.Default.mergeOptions({
   shadowUrl:"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
 });
 
-const ALERT_COLOR={Red:"#ff4060",Orange:"#ff8f00",Yellow:"#ffd600",Normal:"#00e676"};
-const STATUS_STEPS=[
-  {s:"Reported",        l:"Request Received",    i:"📋"},
-  {s:"AmbulanceRequested",l:"Finding Ambulance", i:"🔍"},
+const TILE_URLS = {
+  street:"https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  dark:"https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+  smooth:"https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+  topo:"https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+};
+const ALERT_C = {Red:"#ff4060",Orange:"#ff8f00",Yellow:"#ffd600",Normal:"#00e676"};
+const SEV_C   = {Critical:"#ff4060",High:"#ff8f00",Medium:"#ffd600",Low:"#00e676"};
+const TIER_C  = {Tier1:"#00e676",Tier2:"#00c8ff",Tier3:"#b388ff"};
+const TIER_L  = {Tier1:"Government",Tier2:"Private Partner",Tier3:"Premium Private"};
+const CRIT_KW = ["unconscious","not breathing","no pulse","cardiac arrest","seizure","unresponsive","drowning","gunshot"];
+const HIGH_KW  = ["chest pain","difficulty breathing","severe pain","head injury","bleeding heavily","vomiting blood"];
+
+const STATUS_STEPS = [
+  {s:"Reported",l:"Request Received",i:"📋"},
+  {s:"Queued",l:"Queued - Finding Ambulance",i:"⏳"},
+  {s:"AmbulanceRequested",l:"Ambulance Being Located",i:"🔍"},
   {s:"AmbulanceAccepted",l:"Ambulance Confirmed",i:"✅"},
-  {s:"EnRoute",          l:"Ambulance En Route", i:"🚑"},
-  {s:"OnScene",          l:"Ambulance On Scene", i:"👨‍⚕️"},
+  {s:"EnRoute",l:"Ambulance En Route",i:"🚑"},
+  {s:"OnScene",l:"Ambulance On Scene",i:"👨‍⚕️"},
   {s:"TransportingToHospital",l:"Going to Hospital",i:"🏥"},
-  {s:"Resolved",         l:"Resolved",           i:"✅"},
+  {s:"Resolved",l:"Resolved",i:"✅"},
 ];
 
-function createHospitalIcon(h) {
-  const c = ALERT_COLOR[h.alertLevel]||"#4e7090";
+function createHospIcon(h) {
+  const c=ALERT_C[h.alertLevel]||"#4e7090";
+  const tc=TIER_C[h.tier]||"#8a8a8a";
   const r=h.resources||{};
   return L.divIcon({
     className:"",
-    html:`<div style="background:#0d1e35;border:2px solid ${c};border-radius:8px;padding:5px 9px;min-width:120px;box-shadow:0 2px 12px rgba(0,0,0,.5);cursor:pointer">
-      <div style="font-size:8px;color:${c};font-weight:700;letter-spacing:1px">${h.alertLevel}</div>
-      <div style="font-size:11px;font-weight:700;color:#e8f1fa;margin:2px 0">${h.name.length>22?h.name.slice(0,20)+"…":h.name}</div>
-      <div style="font-size:9px;color:#4e7090;margin-bottom:3px">${h.location?.city||""} · ${Math.round(h.distKm||0)}km</div>
-      <div style="font-size:10px;color:#8aaccc">🛏 ICU ${r.icuBeds?.available||0}/${r.icuBeds?.total||0}</div>
+    html:`<div style="background:#fff;border:2px solid ${c};border-radius:10px;padding:6px 10px;min-width:130px;box-shadow:0 3px 14px rgba(0,0,0,.18);cursor:pointer;font-family:system-ui">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
+        <span style="font-size:8px;color:${c};font-weight:800;letter-spacing:1px">${h.alertLevel}</span>
+        <span style="font-size:7px;color:${tc};font-weight:700">${h.tier||""}</span>
+      </div>
+      <div style="font-size:11px;font-weight:700;color:#0d1e35;line-height:1.2;margin-bottom:2px">${h.name.length>22?h.name.slice(0,20)+"...":h.name}</div>
+      <div style="font-size:9px;color:#666;margin-bottom:2px">${h.location?.city||""}${h.distKm?" · "+h.distKm+"km":""}</div>
+      <div style="font-size:10px">ICU <b style="color:${(r.icuBeds?.available||0)===0?"#ff4060":"#00a855"}">${r.icuBeds?.available||0}/${r.icuBeds?.total||0}</b> O2 <b style="color:${(r.oxygenLevel||100)<40?"#ff4060":"#00a855"}">${r.oxygenLevel||100}%</b></div>
     </div>`,
-    iconAnchor:[60,0],
+    iconAnchor:[65,0],
   });
 }
 
-// Emergency Request Form
-function EmergencyForm({ onSubmit, onClose, userLocation }) {
+function FlyTo({pos}) {
+  const map=useMap();
+  useEffect(()=>{if(pos)map.flyTo([pos.lat,pos.lng],13,{duration:1.5});},[pos?.lat,pos?.lng]);
+  return null;
+}
+
+function LocationSearch({onSelect}) {
+  const [q,setQ]=useState("");const [results,setResults]=useState([]);const [open,setOpen]=useState(false);
+  const search=async()=>{if(q.length<3)return;const r=await forwardGeocode(q);setResults(r);setOpen(r.length>0);};
+  return(
+    <div style={{position:"relative"}}>
+      <div style={{display:"flex",gap:6}}>
+        <input className="input" value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>e.key==="Enter"&&search()} placeholder="Search address or landmark..." style={{flex:1}}/>
+        <button className="btn btn-ghost btn-sm" onClick={search}>Search</button>
+      </div>
+      {open&&results.length>0&&(
+        <div style={{position:"absolute",top:"100%",left:0,right:0,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:"var(--radius-md)",zIndex:2000,boxShadow:"var(--shadow-md)",maxHeight:180,overflowY:"auto"}}>
+          {results.map((r,i)=>(
+            <div key={i} onClick={()=>{onSelect(r.lat,r.lng,r.short);setOpen(false);setQ(r.short);}} style={{padding:"9px 14px",cursor:"pointer",fontSize:12,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)"}} onMouseEnter={e=>e.currentTarget.style.background="var(--bg-hover)"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+              📍 {r.short}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmergencyForm({onClose,onSubmit,userLocation,preferredHospital}) {
   const [step,setStep]=useState(1);
-  const [f,setF]=useState({
-    type:"Other", severity:"High",
-    patientName:"", patientAge:"", patientPhone:"",
-    description:"", address:"",
-    lat: userLocation?.lat||"", lng: userLocation?.lng||"",
-    requiredFacilities:[],
-    reporterName:"", reporterPhone:"",
-  });
-  const [submitting,setSubmitting]=useState(false);
-  const [locating,setLocating]=useState(false);
+  const [f,setF]=useState({type:"Other",severity:"High",patientName:"",patientAge:"",patientPhone:"",description:"",address:"",locationName:"",lat:userLocation?.lat||"",lng:userLocation?.lng||"",requiredFacilities:[],reporterName:"",reporterPhone:""});
+  const [submitting,setSubmitting]=useState(false);const [locating,setLocating]=useState(false);const [aiWarn,setAiWarn]=useState("");const [locName,setLocName]=useState(userLocation?.name||"");
   const s=(k,v)=>setF(p=>({...p,[k]:v}));
   const toggleFac=fc=>setF(p=>({...p,requiredFacilities:p.requiredFacilities.includes(fc)?p.requiredFacilities.filter(x=>x!==fc):[...p.requiredFacilities,fc]}));
 
+  const checkAI=desc=>{
+    const d=(desc||"").toLowerCase();
+    if(CRIT_KW.some(k=>d.includes(k)))setAiWarn("AI Triage: Description suggests CRITICAL. Severity will be auto-upgraded.");
+    else if(HIGH_KW.some(k=>d.includes(k))&&f.severity==="Low")setAiWarn("AI Triage: Suggests HIGH severity. Consider upgrading.");
+    else setAiWarn("");
+  };
+
   const getGPS=()=>{
     setLocating(true);
-    navigator.geolocation?.getCurrentPosition(pos=>{ s("lat",pos.coords.latitude.toFixed(6)); s("lng",pos.coords.longitude.toFixed(6)); setLocating(false); },()=>setLocating(false),{enableHighAccuracy:true});
+    navigator.geolocation?.getCurrentPosition(async pos=>{
+      const {latitude:lat,longitude:lng}=pos.coords;
+      s("lat",lat.toFixed(6));s("lng",lng.toFixed(6));setLocating(false);
+      try{const g=await reverseGeocode(lat,lng);s("locationName",g.short);s("address",g.full);setLocName(g.short);}catch(e){}
+    },()=>{setLocating(false);alert("GPS unavailable. Enter location manually.");},{enableHighAccuracy:true});
   };
 
   const submit=async()=>{
     setSubmitting(true);
-    try { const result=await onSubmit(f); return result; }
-    catch(e){ alert("Error: "+e.message); setSubmitting(false); }
+    try{const r=await onSubmit(f);return r;}
+    catch(e){alert("Error: "+e.message);setSubmitting(false);}
   };
 
   const TYPES=[["Cardiac","🫀"],["Stroke","🧠"],["Trauma","🤕"],["Respiratory","💨"],["Obstetric","🤱"],["Pediatric","👶"],["Burns","🔥"],["Other","⚕️"]];
   const FACS=[["ICU","🛏"],["Ventilator","💨"],["BloodBank","🩸"],["Trauma","🚑"]];
 
-  return (
+  return(
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560,maxHeight:"90vh",overflowY:"auto"}}>
-        <div style={{background:"var(--red-dim)",border:"1px solid var(--red)",borderRadius:"var(--radius-md)",padding:"12px 16px",marginBottom:16,display:"flex",gap:10,alignItems:"center"}}>
-          <span style={{fontSize:24}}>🚨</span>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:540,maxHeight:"90vh",overflowY:"auto"}}>
+        <div style={{background:"var(--red-dim)",border:"1px solid var(--red)",borderRadius:"var(--radius-md)",padding:"10px 14px",marginBottom:14,display:"flex",gap:10,alignItems:"center"}}>
+          <span style={{fontSize:22}}>🚨</span>
           <div>
-            <div style={{fontFamily:"var(--font-display)",fontWeight:700,color:"var(--red)",fontSize:15}}>Emergency Ambulance Request</div>
-            <div style={{fontSize:11,color:"var(--text-muted)"}}>Nearest available ambulance will be dispatched immediately</div>
+            <div style={{fontFamily:"var(--font-display)",fontWeight:700,color:"var(--red)",fontSize:14}}>Emergency Ambulance Request</div>
+            <div style={{fontSize:11,color:"var(--text-muted)"}}>AI dispatches nearest ambulance · No login required</div>
           </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} style={{marginLeft:"auto"}}>✕</button>
         </div>
 
         {step===1&&<>
           <div style={{marginBottom:14}}>
             <label className="form-label">Emergency Type *</label>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
-              {TYPES.map(([t,i])=>(
-                <button key={t} type="button" onClick={()=>s("type",t)} style={{padding:"10px 8px",border:`1px solid ${f.type===t?"var(--red)":"var(--border)"}`,background:f.type===t?"var(--red-dim)":"var(--bg-elevated)",color:f.type===t?"var(--red)":"var(--text-secondary)",borderRadius:"var(--radius-md)",cursor:"pointer",fontSize:11,textAlign:"center",transition:"all .15s"}}>
-                  <div style={{fontSize:20,marginBottom:3}}>{i}</div>{t}
-                </button>
-              ))}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6}}>
+              {TYPES.map(([t,i])=>(<button key={t} type="button" onClick={()=>s("type",t)} style={{padding:"9px 5px",border:`2px solid ${f.type===t?"var(--red)":"var(--border)"}`,background:f.type===t?"var(--red-dim)":"var(--bg-elevated)",color:f.type===t?"var(--red)":"var(--text-secondary)",borderRadius:"var(--radius-md)",cursor:"pointer",fontSize:11,textAlign:"center"}}><div style={{fontSize:18,marginBottom:2}}>{i}</div>{t}</button>))}
             </div>
           </div>
           <div style={{marginBottom:14}}>
             <label className="form-label">Severity</label>
             <div style={{display:"flex",gap:8}}>
-              {[["Critical","var(--red)"],["High","var(--orange)"],["Medium","var(--yellow)"],["Low","var(--green)"]].map(([sv,c])=>(
-                <button key={sv} type="button" onClick={()=>s("severity",sv)} style={{flex:1,padding:"8px",border:`1px solid ${f.severity===sv?c:"var(--border)"}`,background:f.severity===sv?`${c}22`:"var(--bg-elevated)",color:f.severity===sv?c:"var(--text-secondary)",borderRadius:"var(--radius-md)",cursor:"pointer",fontSize:12,fontWeight:f.severity===sv?700:400}}>
-                  {sv}
-                </button>
-              ))}
+              {["Critical","High","Medium","Low"].map(sv=>(<button key={sv} type="button" onClick={()=>s("severity",sv)} style={{flex:1,padding:"8px",border:`2px solid ${f.severity===sv?SEV_C[sv]:"var(--border)"}`,background:f.severity===sv?`${SEV_C[sv]}18`:"var(--bg-elevated)",color:f.severity===sv?SEV_C[sv]:"var(--text-muted)",borderRadius:"var(--radius-md)",cursor:"pointer",fontSize:12,fontWeight:f.severity===sv?700:400}}>{sv}</button>))}
             </div>
           </div>
           <div style={{marginBottom:14}}>
+            <label className="form-label">Description (AI triage based on this)</label>
+            <textarea className="input" rows={2} value={f.description} onChange={e=>{s("description",e.target.value);checkAI(e.target.value);}} placeholder="Describe symptoms — e.g. unconscious, chest pain, not breathing..."/>
+            {aiWarn&&<div style={{fontSize:11,color:"var(--orange)",marginTop:5,background:"var(--orange-dim)",padding:"6px 10px",borderRadius:"var(--radius-sm)"}}>🤖 {aiWarn}</div>}
+          </div>
+          <div style={{marginBottom:14}}>
             <label className="form-label">Required Facilities</label>
-            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              {FACS.map(([fc,i])=>(
-                <button key={fc} type="button" onClick={()=>toggleFac(fc)} style={{padding:"6px 12px",border:`1px solid ${f.requiredFacilities.includes(fc)?"var(--accent)":"var(--border)"}`,background:f.requiredFacilities.includes(fc)?"var(--accent-dim)":"var(--bg-elevated)",color:f.requiredFacilities.includes(fc)?"var(--accent)":"var(--text-secondary)",borderRadius:"var(--radius-md)",cursor:"pointer",fontSize:12}}>
-                  {i} {fc}
-                </button>
-              ))}
+            <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+              {FACS.map(([fc,i])=>(<button key={fc} type="button" onClick={()=>toggleFac(fc)} style={{padding:"5px 12px",border:`1px solid ${f.requiredFacilities.includes(fc)?"var(--accent)":"var(--border)"}`,background:f.requiredFacilities.includes(fc)?"var(--accent-dim)":"var(--bg-elevated)",color:f.requiredFacilities.includes(fc)?"var(--accent)":"var(--text-secondary)",borderRadius:"var(--radius-md)",cursor:"pointer",fontSize:12}}>{i} {fc}</button>))}
             </div>
           </div>
-          <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}>
+          <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
             <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-            <button className="btn btn-primary" onClick={()=>setStep(2)}>Next: Your Location →</button>
+            <button className="btn btn-primary" onClick={()=>setStep(2)}>Next: Location →</button>
           </div>
         </>}
 
         {step===2&&<>
-          <div style={{marginBottom:14}}>
-            <label className="form-label">Your Location *</label>
-            <button className="btn btn-primary btn-sm" onClick={getGPS} disabled={locating} style={{marginBottom:10,width:"100%",justifyContent:"center",padding:"10px"}}>
-              {locating?"🔄 Detecting GPS…":"📍 Auto-Detect My Location"}
-            </button>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-              <div><label className="form-label">Latitude</label><input className="input" type="number" step="0.000001" value={f.lat} onChange={e=>s("lat",e.target.value)} placeholder="23.1815" required/></div>
-              <div><label className="form-label">Longitude</label><input className="input" type="number" step="0.000001" value={f.lng} onChange={e=>s("lng",e.target.value)} placeholder="79.9864" required/></div>
+          {f.preferredHospitalName&&<div style={{background:"var(--accent-dim)",border:"1px solid rgba(0,200,255,.2)",borderRadius:"var(--radius-md)",padding:"10px 14px",marginBottom:12,fontSize:12,color:"var(--text-secondary)"}}><b style={{color:"var(--accent)"}}>🏥 Preferred Hospital:</b> {f.preferredHospitalName} <button type="button" style={{background:"none",border:"none",color:"var(--text-muted)",cursor:"pointer",fontSize:11}} onClick={()=>s("preferredHospitalId","")}>✕ Remove</button></div>}
+          <button className="btn btn-primary btn-sm" onClick={getGPS} disabled={locating} style={{width:"100%",justifyContent:"center",padding:"11px",marginBottom:12,fontSize:14}}>
+            {locating?"Detecting GPS...":"📍 Auto-Detect My Location"}
+          </button>
+          {locName&&<div style={{background:"var(--green-dim)",border:"1px solid var(--green)",borderRadius:"var(--radius-md)",padding:"8px 12px",marginBottom:10,fontSize:12,color:"var(--green)"}}>📍 {locName}</div>}
+          <div style={{marginBottom:10}}>
+            <label className="form-label">Or Search Address</label>
+            <LocationSearch onSelect={(lat,lng,name)=>{s("lat",lat.toFixed(6));s("lng",lng.toFixed(6));s("locationName",name);setLocName(name);}}/>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+            <div><label className="form-label">Latitude *</label><input className="input" type="number" step="0.000001" value={f.lat} onChange={e=>s("lat",e.target.value)} required/></div>
+            <div><label className="form-label">Longitude *</label><input className="input" type="number" step="0.000001" value={f.lng} onChange={e=>s("lng",e.target.value)} required/></div>
+          </div>
+          <div style={{marginBottom:10}}><label className="form-label">Address / Landmark</label><input className="input" value={f.address} onChange={e=>s("address",e.target.value)} placeholder="Near XYZ, opposite ABC..."/></div>
+          <div style={{background:"var(--bg-elevated)",border:"1px solid var(--border)",borderRadius:"var(--radius-sm)",padding:"8px 12px",fontSize:11,color:"var(--text-muted)",marginBottom:12}}>
+            GPS not working? Get coordinates from Google Maps: long press on location, copy lat/lng
+          </div>
+          <div style={{marginBottom:10}}>
+            <label className="form-label">Patient Details (optional)</label>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <input className="input" value={f.patientName} onChange={e=>s("patientName",e.target.value)} placeholder="Patient name (optional)"/>
+              <input className="input" type="number" value={f.patientAge} onChange={e=>s("patientAge",e.target.value)} placeholder="Age"/>
             </div>
-            <div style={{marginTop:10}}><label className="form-label">Address / Landmark</label><input className="input" value={f.address} onChange={e=>s("address",e.target.value)} placeholder="Near XYZ, Street name, Landmark…"/></div>
           </div>
           <div style={{marginBottom:14}}>
-            <label className="form-label">Patient Details</label>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-              <div><input className="input" value={f.patientName} onChange={e=>s("patientName",e.target.value)} placeholder="Patient Name"/></div>
-              <div><input className="input" type="number" value={f.patientAge} onChange={e=>s("patientAge",e.target.value)} placeholder="Age"/></div>
-            </div>
-            <input className="input" style={{marginTop:8}} value={f.description} onChange={e=>s("description",e.target.value)} placeholder="Brief description of emergency…"/>
-          </div>
-          <div style={{marginBottom:14}}>
-            <label className="form-label">Your Contact (optional)</label>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-              <input className="input" value={f.reporterName} onChange={e=>s("reporterName",e.target.value)} placeholder="Your Name"/>
-              <input className="input" value={f.reporterPhone} onChange={e=>s("reporterPhone",e.target.value)} placeholder="Your Phone"/>
+            <label className="form-label">Your Contact (for ambulance driver)</label>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <input className="input" value={f.reporterName} onChange={e=>s("reporterName",e.target.value)} placeholder="Your name"/>
+              <input className="input" value={f.reporterPhone} onChange={e=>s("reporterPhone",e.target.value)} placeholder="Your phone (required)" required/>
             </div>
           </div>
           <div style={{display:"flex",gap:10,justifyContent:"space-between",marginTop:16}}>
-            <button className="btn btn-ghost" onClick={()=>setStep(1)}>← Back</button>
-            <button className="btn btn-primary" style={{background:"var(--red)",borderColor:"var(--red)",padding:"10px 24px",fontSize:14}} onClick={submit} disabled={submitting||!f.lat||!f.lng}>
-              {submitting?"🔄 Sending…":"🚨 Request Ambulance NOW"}
+            <button className="btn btn-ghost" onClick={()=>setStep(1)}>Back</button>
+            <button className="btn btn-primary" style={{background:"var(--red)",borderColor:"var(--red)",padding:"11px 24px",fontSize:14,fontWeight:700}} onClick={submit} disabled={submitting||!f.lat||!f.lng}>
+              {submitting?"Sending...":"Request Ambulance NOW"}
             </button>
           </div>
         </>}
@@ -155,271 +205,239 @@ function EmergencyForm({ onSubmit, onClose, userLocation }) {
   );
 }
 
-// Live tracking component
-function LiveTracker({ requestId, onClose }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async () => {
-    try {
-      const r = await api.get(`/emergencies/track/${requestId}`);
-      setData(r.data);
-    } catch(e) { console.error(e); }
-    finally { setLoading(false); }
-  }, [requestId]);
+export default function CitizenPortal({onStaffLogin,showStaffLoginButton}) {
+  const [hospitals,setHospitals]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [view,setView]=useState("map");
+  const [mapTile,setMapTile]=useState("street");
+  const [showForm,setShowForm]=useState(false);
+  const [trackId,setTrackId]=useState(null);
+  const [userPos,setUserPos]=useState(null);
+  const [locating,setLocating]=useState(false);
+  const [flyTo,setFlyTo]=useState(null);
+  const [toast,setToast]=useState(null);
+  const [queueAlert,setQueueAlert]=useState(null);
+  const [trackInput,setTrackInput]=useState("");
+  const [bookingHospital,setBookingHospital]=useState(null);
+  const [hospitalSearch,setHospitalSearch]=useState("");
+  const [hospitalSearchCity,setHospitalSearchCity]=useState("All");
+  const [directRequestHosp,setDirectRequestHosp]=useState(null);
 
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 10000);
-    return () => clearInterval(t);
-  }, [load]);
+  const showToast=(msg,type="info")=>{setToast({msg,type});setTimeout(()=>setToast(null),6000);};
 
-  useEffect(() => {
-    socket.on("emergencyUpdate", d => { if(d.requestId === requestId) setData(d); });
-    return () => socket.off("emergencyUpdate");
-  }, [requestId]);
+  useEffect(()=>{
+    const p=new URLSearchParams(window.location.search);
+    const t=p.get("track");
+    if(t){setTrackId(t);setView("track");}
+  },[]);
 
-  const statusIdx = data ? STATUS_STEPS.findIndex(s=>s.s===data.status) : -1;
+  const loadHospitals=useCallback(async(lat,lng)=>{
+    try{
+      const url=lat&&lng?`/emergencies/nearby-hospitals?lat=${lat}&lng=${lng}`:"/hospitals/public";
+      const r=await api.get(url);setHospitals(r.data);
+    }catch(e){console.error(e);}
+    finally{setLoading(false);}
+  },[]);
 
-  if (loading) return <div style={{padding:40,textAlign:"center",color:"var(--text-muted)"}}>Loading tracking…</div>;
-  if (!data)   return <div style={{padding:40,textAlign:"center",color:"var(--red)"}}>Emergency not found</div>;
+  const detectLocation=()=>{
+    setLocating(true);
+    navigator.geolocation?.getCurrentPosition(async pos=>{
+      const {latitude:lat,longitude:lng}=pos.coords;
+      setUserPos({lat,lng});setFlyTo({lat,lng});
+      loadHospitals(lat,lng);setLocating(false);
+    },()=>{loadHospitals();setLocating(false);showToast("GPS unavailable - showing all hospitals","error");},{enableHighAccuracy:true});
+  };
 
-  return (
-    <div>
-      <div style={{background:"var(--accent-dim)",border:"1px solid var(--accent)",borderRadius:"var(--radius-md)",padding:14,marginBottom:16}}>
-        <div style={{fontFamily:"var(--font-display)",fontSize:13,fontWeight:700,color:"var(--accent)",marginBottom:4}}>
-          🚨 Emergency #{data.requestId} — {data.type} — {data.severity}
+  useEffect(()=>{loadHospitals();},[loadHospitals]);
+
+  useEffect(()=>{
+    socket.on("hospitalResourceUpdate",()=>loadHospitals(userPos?.lat,userPos?.lng));
+    return()=>socket.off("hospitalResourceUpdate");
+  },[loadHospitals,userPos]);
+
+  const submitEmergency=async form=>{
+    const r=await api.post("/emergencies",form);
+    const data=r.data;
+    if(data.isDuplicate){showToast(`Duplicate detected. Tracking existing: ${data.requestId}`,"error");setTrackId(data.requestId);setView("track");return data;}
+    setTrackId(data.requestId);setShowForm(false);
+    if(data.status==="Queued"){setQueueAlert({message:`No ambulance available. Queue position: #${data.queuePosition}. Auto-assigned when available.`,requestId:data.requestId});}
+    else{showToast(`Ambulance dispatched! ID: ${data.requestId}`,"success");}
+    setView("track");
+    if(data.wasTriageUpgraded)showToast(`AI upgraded severity to ${data.severity}`,"error");
+    return data;
+  };
+
+  const totalH=hospitals.length,t1=hospitals.filter(h=>h.tier==="Tier1").length;
+  const availICU=hospitals.reduce((s,h)=>s+(h.resources?.icuBeds?.available||0),0);
+  const TILE_LABELS={street:"Street",dark:"Dark",smooth:"Smooth",topo:"Topo"};
+
+  return(
+    <div style={{minHeight:"100vh",background:"var(--bg-primary)",fontFamily:"var(--font-body)"}}>
+      {toast&&<div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",zIndex:9999,background:toast.type==="error"?"var(--red-dim)":toast.type==="success"?"var(--green-dim)":"var(--accent-dim)",border:`1px solid ${toast.type==="error"?"var(--red)":toast.type==="success"?"var(--green)":"var(--accent)"}`,color:toast.type==="error"?"var(--red)":toast.type==="success"?"var(--green)":"var(--accent)",padding:"10px 22px",borderRadius:"var(--radius-md)",fontWeight:600,fontSize:13,boxShadow:"var(--shadow-md)",maxWidth:480,textAlign:"center"}}>{toast.msg}</div>}
+
+      {queueAlert&&(
+        <div style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",zIndex:9998,background:"var(--yellow-dim)",border:"1px solid var(--yellow)",borderRadius:"var(--radius-lg)",padding:"14px 20px",maxWidth:500,boxShadow:"var(--shadow-lg)",textAlign:"center"}}>
+          <div style={{fontFamily:"var(--font-display)",fontWeight:700,color:"var(--yellow)",marginBottom:4}}>Queued — No Ambulance Available Right Now</div>
+          <div style={{fontSize:12,color:"var(--text-secondary)",marginBottom:8}}>{queueAlert.message}</div>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setQueueAlert(null)}>Dismiss</button>
         </div>
-        <div style={{fontSize:11,color:"var(--text-muted)"}}>Patient: {data.patientName} · {data.location?.address}</div>
+      )}
+
+      <header style={{background:"var(--bg-card)",borderBottom:"1px solid var(--border)",padding:"12px 20px",position:"sticky",top:0,zIndex:500,boxShadow:"var(--shadow-sm)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",maxWidth:1400,margin:"0 auto"}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <div style={{fontSize:26}}>🏥</div>
+            <div>
+              <div style={{fontFamily:"var(--font-display)",fontWeight:800,fontSize:16,color:"var(--text-primary)",letterSpacing:"1.5px"}}>CARE-CONNECT</div>
+              <div style={{fontSize:9,color:"var(--text-muted)",letterSpacing:".8px"}}>AI EMERGENCY RESPONSE & HOSPITAL COORDINATION</div>
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+            <div style={{display:"flex",gap:10,fontSize:11,color:"var(--text-muted)"}}>
+              <span>🏥 {totalH} Hospitals</span><span>🏛 {t1} Govt</span><span>🛏 {availICU} ICU Free</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"var(--green)",fontWeight:700}}>
+              <span style={{width:7,height:7,background:"var(--green)",borderRadius:"50%",display:"inline-block",boxShadow:"0 0 6px var(--green)"}}/>LIVE
+            </div>
+            {showStaffLoginButton&&<button onClick={onStaffLogin} className="btn btn-ghost btn-sm" style={{fontSize:11}}>Staff Login</button>}
+          </div>
+        </div>
+      </header>
+
+      {view!=="track"&&(
+        <div style={{background:"linear-gradient(135deg,#1a0000,#2d0505,#1a0000)",borderBottom:"2px solid var(--red)",padding:"18px 20px"}}>
+          <div style={{maxWidth:1400,margin:"0 auto",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+            <div>
+              <div style={{fontFamily:"var(--font-display)",fontSize:18,fontWeight:800,color:"var(--red)",letterSpacing:"1px",marginBottom:2}}>Medical Emergency?</div>
+              <div style={{fontSize:12,color:"rgba(255,100,100,.75)"}}>AI dispatches nearest ambulance · No login · Tracks automatically · Queue if busy</div>
+            </div>
+            <div style={{display:"flex",gap:10,alignItems:"center"}}>
+              <button onClick={detectLocation} disabled={locating} className="btn btn-ghost btn-sm" style={{color:"var(--text-secondary)",fontSize:12}}>{locating?"Detecting...":"📍 Detect Location"}</button>
+              <button onClick={()=>setShowForm(true)} style={{background:"var(--red)",border:"2px solid #ff6060",color:"#fff",padding:"11px 26px",borderRadius:"var(--radius-md)",fontFamily:"var(--font-display)",fontWeight:800,fontSize:15,cursor:"pointer",letterSpacing:"1px",boxShadow:"0 0 20px rgba(255,64,96,.4)"}}>
+                REQUEST AMBULANCE
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{background:"var(--bg-card)",borderBottom:"1px solid var(--border)",overflowX:"auto"}}>
+        <div style={{display:"flex",gap:0,padding:"0 20px",maxWidth:1400,margin:"0 auto",alignItems:"center"}}>
+          {[["map","Hospital Map"],["list","Hospital List"],...(trackId?[["track","Track Emergency"]]:[])].map(([v,l])=>(
+            <button key={v} className={`tab-btn ${view===v?"active":""}`} onClick={()=>setView(v)} style={{whiteSpace:"nowrap"}}>{l}</button>
+          ))}
+          <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6,padding:"8px 0"}}>
+            <input className="input" style={{width:150,fontSize:11,padding:"5px 10px",height:28}} placeholder="EMG-00001 to track" value={trackInput} onChange={e=>setTrackInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&trackInput&&(setTrackId(trackInput),setView("track"))}/>
+            <button className="btn btn-ghost btn-sm" style={{fontSize:10,padding:"5px 10px"}} onClick={()=>trackInput&&(setTrackId(trackInput),setView("track"))}>Track</button>
+          </div>
+        </div>
       </div>
 
-      {/* Status timeline */}
-      <div style={{marginBottom:20}}>
-        {STATUS_STEPS.slice(0,6).map((st,i)=>{
-          const done   = statusIdx > i;
-          const active = statusIdx === i;
-          return (
-            <div key={st.s} style={{display:"flex",gap:12,alignItems:"flex-start",marginBottom:10}}>
-              <div style={{width:32,height:32,borderRadius:"50%",background:done?"var(--green)":active?"var(--accent)":"var(--bg-elevated)",border:`2px solid ${done?"var(--green)":active?"var(--accent)":"var(--border)"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>
-                {done?"✓":st.i}
-              </div>
-              <div style={{paddingTop:4}}>
-                <div style={{fontSize:13,fontWeight:active?700:400,color:done?"var(--green)":active?"var(--text-primary)":"var(--text-muted)"}}>{st.l}</div>
-                {active&&<div style={{fontSize:11,color:"var(--accent)",animation:"pulse-text 1.5s infinite"}}>● In progress…</div>}
+      <div style={{padding:16,maxWidth:1400,margin:"0 auto"}}>
+        {view==="map"&&(
+          <div>
+            <div style={{display:"flex",gap:6,marginBottom:10,alignItems:"center",flexWrap:"wrap"}}>
+              {Object.entries(TILE_LABELS).map(([k,l])=>(
+                <button key={k} className={`btn btn-sm ${mapTile===k?"btn-primary":"btn-ghost"}`} onClick={()=>setMapTile(k)}>{l}</button>
+              ))}
+              <button className="btn btn-ghost btn-sm" onClick={detectLocation} disabled={locating}>{locating?"Detecting...":"📍 My Location"}</button>
+              {userPos&&<span style={{fontSize:11,color:"var(--green)"}}>Location detected</span>}
+              <div style={{marginLeft:"auto",display:"flex",gap:8,fontSize:10,color:"var(--text-muted)"}}>
+                {Object.entries({Tier1:"#00e676",Tier2:"#00c8ff",Tier3:"#b388ff"}).map(([t,c])=>(<span key={t} style={{display:"flex",alignItems:"center",gap:3}}><span style={{width:8,height:8,borderRadius:"50%",background:c,display:"inline-block"}}/>{TIER_L[t]}</span>))}
               </div>
             </div>
-          );
-        })}
-      </div>
-
-      {/* Assigned ambulance */}
-      {data.assignedAmbulance&&(
-        <div style={{background:"var(--bg-elevated)",border:"1px solid var(--border)",borderRadius:"var(--radius-md)",padding:14,marginBottom:14}}>
-          <div style={{fontFamily:"var(--font-display)",fontSize:12,fontWeight:600,color:"var(--orange)",marginBottom:8}}>🚑 ASSIGNED AMBULANCE</div>
-          <div style={{fontSize:13,fontWeight:700,color:"var(--text-primary)"}}>{data.assignedAmbulance.name||data.assignedAmbulance.ambulanceId}</div>
-          <div style={{fontSize:12,color:"var(--text-muted)",marginTop:4}}>
-            Driver: {data.assignedAmbulance.driver||"—"}
-            {data.assignedAmbulance.driverPhone&&<> · 📞 {data.assignedAmbulance.driverPhone}</>}
-          </div>
-          {data.estimatedArrivalTime>0&&<div style={{fontSize:12,color:"var(--accent)",marginTop:4}}>ETA: ~{data.estimatedArrivalTime} minutes</div>}
-        </div>
-      )}
-
-      {/* Assigned hospital */}
-      {data.assignedHospital&&(
-        <div style={{background:"var(--bg-elevated)",border:"1px solid var(--border)",borderRadius:"var(--radius-md)",padding:14,marginBottom:14}}>
-          <div style={{fontFamily:"var(--font-display)",fontSize:12,fontWeight:600,color:"var(--green)",marginBottom:8}}>🏥 ASSIGNED HOSPITAL</div>
-          <div style={{fontSize:13,fontWeight:700,color:"var(--text-primary)"}}>{data.assignedHospital.name}</div>
-          <div style={{fontSize:12,color:"var(--text-muted)",marginTop:4}}>📍 {data.assignedHospital.location?.city}</div>
-          {data.assignedHospital.contact?.emergency&&<div style={{fontSize:12,color:"var(--accent)",marginTop:4}}>📞 Emergency: {data.assignedHospital.contact.emergency}</div>}
-        </div>
-      )}
-
-      {/* AI Recommendation */}
-      {data.aiRecommendation&&(
-        <div style={{background:"rgba(0,200,255,.05)",border:"1px solid rgba(0,200,255,.2)",borderRadius:"var(--radius-md)",padding:12,fontSize:11,color:"var(--text-secondary)",lineHeight:1.6}}>
-          🤖 <strong style={{color:"var(--accent)"}}>AI Guide:</strong> {data.aiRecommendation}
-        </div>
-      )}
-
-      <div style={{marginTop:16,display:"flex",gap:10}}>
-        <button className="btn btn-ghost btn-sm" onClick={onClose}>Close Tracker</button>
-        <button className="btn btn-primary btn-sm" onClick={load}>↺ Refresh</button>
-      </div>
-    </div>
-  );
-}
-
-export default function CitizenPortal({ onBack, onStaffLogin, showStaffLoginButton }) {
-  const [hospitals, setHospitals] = useState([]);
-  const [loading, setLoading]     = useState(true);
-  const [view, setView]           = useState("map");  // map | list | emergency | track
-  const [showForm, setShowForm]   = useState(false);
-  const [trackId, setTrackId]     = useState(null);
-  const [userPos, setUserPos]     = useState(null);
-  const [locating, setLocating]   = useState(false);
-  const [selected, setSelected]   = useState(null);
-  const [submitted, setSubmitted] = useState(null);
-
-  const loadHospitals = useCallback(async (lat, lng) => {
-    try {
-      const url = lat && lng ? `/emergencies/nearby-hospitals?lat=${lat}&lng=${lng}` : "/hospitals/public";
-      const r = await api.get(url);
-      setHospitals(r.data);
-    } catch(e) { console.error(e); }
-    finally { setLoading(false); }
-  }, []);
-
-  const detectLocation = () => {
-    setLocating(true);
-    navigator.geolocation?.getCurrentPosition(pos => {
-      const { latitude: lat, longitude: lng } = pos.coords;
-      setUserPos({ lat, lng });
-      loadHospitals(lat, lng);
-      setLocating(false);
-    }, () => { loadHospitals(); setLocating(false); }, { enableHighAccuracy: true });
-  };
-
-  useEffect(() => { loadHospitals(); }, [loadHospitals]);
-
-  const submitEmergency = async (form) => {
-    const r = await api.post("/emergencies", form);
-    setSubmitted(r.data);
-    setShowForm(false);
-    setTrackId(r.data.requestId);
-    setView("track");
-    return r.data;
-  };
-
-  return (
-    <div style={{ minHeight: "100vh", background: "var(--bg-primary)", fontFamily: "var(--font-body)" }}>
-      {/* Header */}
-      <div style={{ background: "var(--bg-card)", borderBottom: "1px solid var(--border)", padding: "12px 20px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 24 }}>🏥</span>
-          <div>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 700, color: "var(--text-primary)" }}>Healthcare Platform</div>
-            <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Citizen Emergency Portal</div>
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {showStaffLoginButton && (
-            <button onClick={onStaffLogin} className="btn btn-ghost btn-sm" style={{ fontSize: 11, border:"1px solid var(--border)" }}>
-              🔑 Staff Login
-            </button>
-          )}
-          {onBack && !showStaffLoginButton && (
-            <button className="btn btn-ghost btn-sm" onClick={onBack} style={{ fontSize: 11 }}>← Back</button>
-          )}
-        </div>
-      </div>
-
-      {/* Emergency CTA */}
-      {view !== "track" && (
-        <div style={{ background: "linear-gradient(135deg, #1a0000, #2d0a0a)", borderBottom: "1px solid var(--red)", padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-          <div>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 700, color: "var(--red)" }}>🚨 Medical Emergency?</div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>Request an ambulance immediately — we'll find the nearest one</div>
-          </div>
-          <div style={{ display: "flex", gap: 10 }}>
-            <button onClick={detectLocation} disabled={locating} className="btn btn-ghost btn-sm">
-              {locating ? "🔄 Locating…" : "📍 Detect My Location"}
-            </button>
-            <button onClick={() => setShowForm(true)} style={{ background: "var(--red)", border: "none", color: "#fff", padding: "10px 24px", borderRadius: "var(--radius-md)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, cursor: "pointer", letterSpacing: 0.5 }}>
-              🚑 Request Ambulance
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div style={{ background: "var(--bg-card)", borderBottom: "1px solid var(--border)", padding: "0 20px", display: "flex", gap: 0, overflowX: "auto" }}>
-        {[["map","🗺 Hospital Map"],["list","📋 Hospital List"],...((trackId||submitted)?[["track","📡 Track Emergency"]]:[])].map(([v,l])=>(
-          <button key={v} className={`tab-btn ${view===v?"active":""}`} onClick={()=>setView(v)}>{l}</button>
-        ))}
-      </div>
-
-      <div style={{ padding: 20 }}>
-        {/* MAP VIEW */}
-        {view === "map" && (
-          <div>
-            {userPos && (
-              <div className="badge badge-green" style={{ marginBottom: 12 }}>
-                📍 Your location detected — showing nearest hospitals
-              </div>
-            )}
-            <div style={{ borderRadius: "var(--radius-lg)", overflow: "hidden", border: "1px solid var(--border)", height: 520, position: "relative" }}>
-              <MapContainer center={userPos ? [userPos.lat, userPos.lng] : [23.18, 79.98]} zoom={userPos ? 11 : 7} style={{ height: "100%", width: "100%", background: "#0a1628" }}>
-                <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" attribution="© CartoDB" />
-                {userPos && (
-                  <CircleMarker center={[userPos.lat, userPos.lng]} radius={14} pathOptions={{ color:"#ff4060", fillColor:"#ff4060", fillOpacity:0.8, weight:3 }}>
-                    <Popup><div style={{ color: "#e8f1fa", background: "#0d1e35", padding: 8 }}><b>📍 Your Location</b></div></Popup>
-                  </CircleMarker>
-                )}
-                {hospitals.map(h => h.location?.lat && (
-                  <Marker key={h._id} position={[h.location.lat, h.location.lng]} icon={createHospitalIcon(h)}>
+            <div style={{borderRadius:"var(--radius-lg)",overflow:"hidden",border:"1px solid var(--border)",height:520}}>
+              <MapContainer center={userPos?[userPos.lat,userPos.lng]:[23.18,79.98]} zoom={userPos?12:7} style={{height:"100%",width:"100%"}}>
+                <TileLayer url={TILE_URLS[mapTile]} attribution="OpenStreetMap"/>
+                {flyTo&&<FlyTo pos={flyTo}/>}
+                {userPos&&<CircleMarker center={[userPos.lat,userPos.lng]} radius={13} pathOptions={{color:"#ff4060",fillColor:"#ff4060",fillOpacity:.7,weight:3}}><Popup><b>📍 Your Location</b></Popup></CircleMarker>}
+                {hospitals.map(h=>h.location?.lat&&(
+                  <Marker key={h._id} position={[h.location.lat,h.location.lng]} icon={createHospIcon(h)}>
                     <Popup>
-                      <div style={{ fontFamily: "system-ui", background: "#0d1e35", color: "#e8f1fa", minWidth: 220, padding: 8 }}>
-                        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{h.name}</div>
-                        <div style={{ fontSize: 11, color: "#8aaccc", marginBottom: 6 }}>{h.type} · {h.location.city}{h.distKm ? ` · ${h.distKm}km` : ""}</div>
-                        {[["ICU Beds",h.resources?.icuBeds],["General Beds",h.resources?.generalBeds],["Ventilators",h.resources?.ventilators]].map(([lbl,b])=>b&&(
-                          <div key={lbl} style={{ display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:3 }}><span style={{ color:"#4e7090" }}>{lbl}</span><span style={{ color:"#00c8ff",fontWeight:700 }}>{b.available}/{b.total}</span></div>
-                        ))}
-                        <div style={{ fontSize:11,marginTop:4 }}>O₂: <span style={{ color:(h.resources?.oxygenLevel||0)>50?"#00e676":"#ff4060",fontWeight:700 }}>{h.resources?.oxygenLevel||0}%</span></div>
-                        <div style={{ fontSize:11,marginTop:4 }}>📞 {h.contact?.emergency||h.contact?.phone||"—"}</div>
-                        {h.resources?.doctorsOnDuty>0 && <div style={{ fontSize:11 }}>👨‍⚕️ {h.resources.doctorsOnDuty} doctors on duty</div>}
-                        <button onClick={()=>setSelected(h)} style={{ marginTop:8,background:"var(--accent)",border:"none",color:"#000",padding:"5px 12px",borderRadius:4,fontSize:11,cursor:"pointer",width:"100%" }}>View Details</button>
+                      <div style={{fontFamily:"system-ui",fontSize:13,minWidth:220}}>
+                        <div style={{fontWeight:800,marginBottom:4}}>{h.name}</div>
+                        <div style={{fontSize:11,color:"#666",marginBottom:6}}>{TIER_L[h.tier]} · {h.type}{h.distKm?` · ${h.distKm}km`:""}</div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginBottom:6,fontSize:11}}>
+                          <div style={{background:"#f5f5f5",padding:"3px 7px",borderRadius:5}}>ICU <b style={{color:(h.resources?.icuBeds?.available||0)===0?"#ff4060":"#00a855"}}>{h.resources?.icuBeds?.available||0}/{h.resources?.icuBeds?.total||0}</b></div>
+                          <div style={{background:"#f5f5f5",padding:"3px 7px",borderRadius:5}}>O₂ <b style={{color:(h.resources?.oxygenLevel||100)<40?"#ff4060":"#00a855"}}>{h.resources?.oxygenLevel||100}%</b></div>
+                          <div style={{background:"#f5f5f5",padding:"3px 7px",borderRadius:5}}>Vents <b>{h.resources?.ventilators?.available||0}</b></div>
+                          <div style={{background:"#f5f5f5",padding:"3px 7px",borderRadius:5}}>Docs <b>{h.resources?.doctorsOnDuty||0}</b></div>
+                        </div>
+                        {h.govRegistration?.ayushmanEmpanelled&&<div style={{fontSize:10,color:"#00a855",marginBottom:2}}>✓ Ayushman Bharat Empanelled</div>}
+                        {h.govRegistration?.emergencyService&&<div style={{fontSize:10,color:"#0066cc",marginBottom:4}}>✓ Govt Emergency Service</div>}
+                        {h.contact?.emergency&&<div style={{fontSize:11,marginBottom:6}}>📞 {h.contact.emergency}</div>}
+                        <div style={{marginBottom:6,fontSize:10}}>Trust Score: <b style={{color:(h.trustScore||75)>80?"#00a855":(h.trustScore||75)>60?"#ff8f00":"#ff4060"}}>{h.trustScore||75}/100</b></div>
+                        <button onClick={()=>setShowForm(true)} style={{background:"#ff4060",border:"none",color:"#fff",padding:"6px 14px",borderRadius:6,fontSize:11,cursor:"pointer",width:"100%",marginBottom:5}}>Request Ambulance</button>
+                        <button onClick={()=>setBookingHospital(h)} style={{background:"#00a855",border:"none",color:"#fff",padding:"6px 14px",borderRadius:6,fontSize:11,cursor:"pointer",width:"100%"}}>📅 Book Appointment</button>
                       </div>
                     </Popup>
                   </Marker>
                 ))}
               </MapContainer>
-              <div style={{ position:"absolute",top:12,right:12,background:"rgba(13,30,53,.92)",border:"1px solid var(--border)",borderRadius:"var(--radius-md)",padding:"10px 14px",zIndex:1000 }}>
-                <div style={{ fontSize:10,color:"var(--accent)",fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8 }}>Alert Level</div>
-                {Object.entries(ALERT_COLOR).map(([l,c])=>(
-                  <div key={l} style={{ display:"flex",alignItems:"center",gap:7,marginBottom:5,fontSize:11,color:"var(--text-muted)" }}>
-                    <div style={{ width:10,height:10,borderRadius:"50%",background:c }}/><span>{l}</span>
-                    <span style={{ marginLeft:"auto",fontWeight:700,color:"var(--text-primary)" }}>{hospitals.filter(h=>h.alertLevel===l).length}</span>
-                  </div>
-                ))}
-              </div>
             </div>
           </div>
         )}
 
-        {/* LIST VIEW */}
-        {view === "list" && (
+        {view==="list"&&(
           <div>
-            {loading ? <div style={{ textAlign:"center",padding:60,color:"var(--text-muted)" }}>Loading hospitals…</div> : (
-              <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:14 }}>
-                {hospitals.map(h => {
-                  const r=h.resources||{};
-                  const ac=ALERT_COLOR[h.alertLevel]||"#4e7090";
-                  return (
-                    <div key={h._id} className="card" style={{ borderTop:`3px solid ${ac}` }}>
-                      <div style={{ display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10 }}>
-                        <div>
-                          <div style={{ fontFamily:"var(--font-display)",fontWeight:700,fontSize:14,color:"var(--text-primary)" }}>{h.name}</div>
-                          <div style={{ fontSize:11,color:"var(--text-muted)",marginTop:2 }}>📍 {h.location?.city} · {h.type}{h.distKm?` · ${h.distKm}km away`:""}</div>
+            {/* Hospital search bar */}
+          <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+            <input className="input" style={{flex:1,minWidth:180}} placeholder="🔍 Search hospitals by name, city, district..." value={hospitalSearch} onChange={e=>setHospitalSearch(e.target.value)}/>
+            <select className="select" value={hospitalSearchCity} onChange={e=>setHospitalSearchCity(e.target.value)} style={{minWidth:140}}>
+              <option value="All">All Cities</option>
+              {[...new Set(hospitals.map(h=>h.location?.city).filter(Boolean))].sort().map(c=><option key={c}>{c}</option>)}
+            </select>
+          </div>
+          {loading?<div style={{textAlign:"center",padding:60,color:"var(--text-muted)"}}>Loading hospitals...</div>:(
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:14}}>
+                {hospitals.filter(h=>{
+                  if(hospitalSearch) {
+                    const q=hospitalSearch.toLowerCase();
+                    if(!h.name?.toLowerCase().includes(q)&&!h.location?.city?.toLowerCase().includes(q)&&!h.location?.district?.toLowerCase().includes(q)) return false;
+                  }
+                  if(hospitalSearchCity!=="All"&&h.location?.city!==hospitalSearchCity) return false;
+                  return true;
+                }).map(h=>{
+                  const r=h.resources||{};const ac=ALERT_C[h.alertLevel]||"#4e7090";const tc=TIER_C[h.tier]||"#4e7090";
+                  return(
+                    <div key={h._id} className="card" style={{borderTop:`3px solid ${ac}`,cursor:"pointer"}} onClick={()=>{setFlyTo({lat:h.location.lat,lng:h.location.lng});setView("map");}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                        <div style={{flex:1,marginRight:8}}>
+                          <div style={{fontFamily:"var(--font-display)",fontWeight:700,fontSize:14,color:"var(--text-primary)"}}>{h.name}</div>
+                          <div style={{fontSize:11,color:"var(--text-muted)",marginTop:2}}>📍 {h.location?.address||h.location?.city}{h.distKm?` · ${h.distKm}km`:""}</div>
+                          <div style={{display:"flex",gap:5,marginTop:5}}>
+                            <span style={{background:`${tc}22`,color:tc,padding:"1px 7px",borderRadius:4,fontSize:10,fontWeight:600}}>{TIER_L[h.tier]}</span>
+                            <span style={{background:`${ac}22`,color:ac,padding:"1px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{h.alertLevel}</span>
+                          </div>
                         </div>
-                        <span style={{ background:`${ac}22`,color:ac,border:`1px solid ${ac}44`,padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700 }}>{h.alertLevel}</span>
                       </div>
-                      <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10 }}>
-                        {[["🛏 ICU Beds",r.icuBeds?.available,r.icuBeds?.total,"var(--accent)"],["🏨 General",r.generalBeds?.available,r.generalBeds?.total,"var(--purple)"],["💨 Vents",r.ventilators?.available,r.ventilators?.total,"var(--green)"],["🚑 Ambulance",r.ambulancesAvailable,r.ambulancesTotal,"var(--orange)"]].map(([lbl,a,t,c])=>(
-                          <div key={lbl} style={{ background:"var(--bg-elevated)",borderRadius:"var(--radius-md)",padding:"8px 10px",textAlign:"center" }}>
-                            <div style={{ fontSize:10,color:"var(--text-muted)",marginBottom:3 }}>{lbl}</div>
-                            <div style={{ fontFamily:"var(--font-display)",fontSize:16,fontWeight:700,color:c }}>{a||0}/{t||0}</div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7,marginBottom:10}}>
+                        {[["ICU",r.icuBeds,"var(--accent)"],["Beds",r.generalBeds,"var(--purple)"],["Vents",r.ventilators,"var(--green)"]].map(([lbl,b,c])=>b&&(
+                          <div key={lbl} style={{background:"var(--bg-elevated)",borderRadius:"var(--radius-sm)",padding:"6px",textAlign:"center"}}>
+                            <div style={{fontSize:9,color:"var(--text-muted)",marginBottom:1}}>{lbl}</div>
+                            <div style={{fontFamily:"var(--font-display)",fontWeight:700,fontSize:15,color:b.available===0?"var(--red)":c}}>{b.available}<span style={{fontSize:10,color:"var(--text-muted)"}}>/{b.total}</span></div>
                           </div>
                         ))}
                       </div>
-                      <div style={{ display:"flex",gap:6,flexWrap:"wrap" }}>
+                      <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:7}}>
                         <span className={`badge ${(r.oxygenLevel||0)>50?"badge-green":"badge-red"}`}>O₂ {r.oxygenLevel||0}%</span>
-                        {r.bloodBank&&<span className="badge badge-accent">🩸 Blood Bank</span>}
-                        {r.ctScan&&<span className="badge badge-muted">CT Scan</span>}
-                        {h.traumaCenter&&<span className="badge badge-red">🚑 Trauma</span>}
+                        {r.bloodBank&&<span className="badge badge-accent">Blood Bank</span>}
+                        {h.traumaCenter&&<span className="badge badge-red">Trauma</span>}
+                        {h.govRegistration?.ayushmanEmpanelled&&<span className="badge badge-green">Ayushman</span>}
+                        {h.govRegistration?.emergencyService&&<span className="badge badge-accent">Govt Emergency</span>}
                       </div>
-                      {h.contact?.emergency&&<div style={{ fontSize:11,color:"var(--accent)",marginTop:8 }}>📞 Emergency: {h.contact.emergency}</div>}
-                      {r.doctorsOnDuty>0&&<div style={{ fontSize:11,color:"var(--text-muted)",marginTop:4 }}>👨‍⚕️ {r.doctorsOnDuty} doctors · 👩‍⚕️ {r.nursesOnDuty||0} nurses on duty</div>}
+                      <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:5}}>
+                        <div style={{flex:1,height:3,background:"var(--bg-primary)",borderRadius:2}}>
+                          <div style={{width:`${h.trustScore||75}%`,height:"100%",background:(h.trustScore||75)>80?"var(--green)":(h.trustScore||75)>60?"var(--orange)":"var(--red)",borderRadius:2}}/>
+                        </div>
+                        <span style={{fontSize:10,color:"var(--text-muted)"}}>Trust {h.trustScore||75}</span>
+                      </div>
+                      {h.contact?.emergency&&<div style={{fontSize:11,color:"var(--accent)"}}>📞 {h.contact.emergency}</div>}
+                    <div style={{marginTop:8,display:"flex",gap:6}}>
+                      <button onClick={e=>{e.stopPropagation();setDirectRequestHosp(h);setShowForm(true);}} style={{flex:1,padding:"7px",background:"var(--red-dim)",border:"1px solid var(--red)",color:"var(--red)",borderRadius:"var(--radius-md)",fontSize:11,cursor:"pointer",fontWeight:600}}>🚑 Request Emergency</button>
+                      <button onClick={e=>{e.stopPropagation();setBookingHospital(h);}} style={{flex:1,padding:"7px",background:"var(--green-dim)",border:"1px solid var(--green)",color:"var(--green)",borderRadius:"var(--radius-md)",fontSize:11,cursor:"pointer",fontWeight:600}}>📅 Book Appointment</button>
+                    </div>
                     </div>
                   );
                 })}
@@ -428,34 +446,35 @@ export default function CitizenPortal({ onBack, onStaffLogin, showStaffLoginButt
           </div>
         )}
 
-        {/* TRACK VIEW */}
-        {view === "track" && trackId && <LiveTracker requestId={trackId} onClose={() => { setView("map"); setTrackId(null); }} />}
-      </div>
-
-      {/* Selected hospital detail */}
-      {selected && (
-        <div className="modal-overlay" onClick={() => setSelected(null)}>
-          <div className="modal" onClick={e=>e.stopPropagation()} style={{ maxWidth: 500 }}>
-            <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16 }}>
-              <div className="modal-title" style={{ margin:0 }}>🏥 {selected.name}</div>
-              <button className="btn btn-ghost btn-sm" onClick={()=>setSelected(null)}>✕</button>
+        {view==="track"&&trackId&&(
+          <div style={{maxWidth:600,margin:"0 auto"}}>
+            <div style={{display:"flex",gap:10,marginBottom:16,alignItems:"center"}}>
+              <h2 style={{fontFamily:"var(--font-display)",fontSize:18,color:"var(--text-primary)",margin:0}}>Live Tracking</h2>
+              <button className="btn btn-ghost btn-sm" onClick={()=>{setTrackId(null);setView("map");}}>Back to Map</button>
             </div>
-            <div style={{ fontSize:12,lineHeight:1.9,color:"var(--text-muted)" }}>
-              <div><b style={{ color:"var(--text-primary)" }}>Type:</b> {selected.type} · {selected.level}</div>
-              <div><b style={{ color:"var(--text-primary)" }}>Location:</b> {selected.location?.address}, {selected.location?.city}</div>
-              <div><b style={{ color:"var(--text-primary)" }}>Emergency:</b> <span style={{ color:"var(--accent)" }}>{selected.contact?.emergency||"—"}</span></div>
-              <div><b style={{ color:"var(--text-primary)" }}>ICU:</b> {selected.resources?.icuBeds?.available}/{selected.resources?.icuBeds?.total} available</div>
-              <div><b style={{ color:"var(--text-primary)" }}>Oxygen:</b> {selected.resources?.oxygenLevel||0}%</div>
-              {selected.specialties?.length>0&&<div><b style={{ color:"var(--text-primary)" }}>Specialties:</b> {selected.specialties.join(", ")}</div>}
-              <div><b style={{ color:"var(--text-primary)" }}>Avg Wait:</b> {selected.avgPatientWait||0} min</div>
+            <LiveTrackingMap requestId={trackId} onClose={()=>{setTrackId(null);setView("map");}}/>
+          </div>
+        )}
+        {view==="track"&&!trackId&&(
+          <div style={{maxWidth:400,margin:"40px auto",textAlign:"center"}}>
+            <div style={{fontSize:40,marginBottom:12}}>📡</div>
+            <div style={{fontFamily:"var(--font-display)",fontSize:16,color:"var(--text-primary)",marginBottom:8}}>Track Your Emergency</div>
+            <div style={{display:"flex",gap:8}}>
+              <input className="input" style={{flex:1}} placeholder="EMG-00001" value={trackInput} onChange={e=>setTrackInput(e.target.value)}/>
+              <button className="btn btn-primary" onClick={()=>trackInput&&setTrackId(trackInput)}>Track</button>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {showForm && (
-        <EmergencyForm onSubmit={submitEmergency} onClose={() => setShowForm(false)} userLocation={userPos} />
-      )}
+      {showForm&&<EmergencyForm onClose={()=>{setShowForm(false);setDirectRequestHosp(null);}} onSubmit={submitEmergency} userLocation={userPos} preferredHospital={directRequestHosp}/>}
+      {bookingHospital&&<AppointmentModal hospital={bookingHospital} onClose={()=>setBookingHospital(null)}/>}
+      <AIChatbot 
+        userLocation={userPos}
+        onRequestAmbulance={()=>setShowForm(true)}
+        onShowHospitals={()=>setView("list")}
+        hospitals={hospitals}
+      />
     </div>
   );
 }

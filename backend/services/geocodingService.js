@@ -110,3 +110,20 @@ exports.reverseGeocode = async (lat, lng) => {
     };
   }
 };
+// Forward geocode: address -> lat/lng
+exports.forwardGeocode = async (query) => {
+  const axios = require('axios');
+  try {
+    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=in&accept-language=en&q=' + encodeURIComponent(query);
+    const res = await axios.get(url, { timeout:6000, headers:{'User-Agent':'CareConnect/4.0'} });
+    return res.data.map(d => ({
+      lat: parseFloat(d.lat), lng: parseFloat(d.lon),
+      display_name: d.display_name,
+      short: d.display_name.split(',').slice(0,3).join(',').trim(),
+      city: d.address?.city || d.address?.town || '',
+      district: d.address?.county || d.address?.city_district || '',
+      state: d.address?.state || '',
+      pincode: d.address?.postcode || '',
+    }));
+  } catch(e) { return []; }
+};

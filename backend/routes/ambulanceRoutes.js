@@ -1,10 +1,12 @@
 const r = require("express").Router();
 const c = require("../controllers/ambulanceController");
 const auth = require("../middleware/authMiddleware");
+r.get("/stats",                 auth, c.getStats);
 r.get("/",                      auth, c.getAll);
 r.get("/:id",                   auth, c.getOne);
 r.post("/",                     auth, c.create);
 r.put("/:id",                   auth, c.update);
 r.patch("/:id/location",        auth, c.updateLocation);
+r.post("/:id/dispatch",         auth, c.dispatch);
 r.delete("/:id",                auth, c.remove);
 module.exports = r;

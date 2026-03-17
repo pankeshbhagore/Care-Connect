@@ -223,3 +223,36 @@ exports.getPublicOne = async (req, res) => {
     res.json(h);
   } catch(e){ res.status(500).json({ error:e.message }); }
 };
+
+// ── Hospital Trust Score ──────────────────────────────────────
+exports.getTrustScores = async (req, res) => {
+  try {
+    const hospitals = await Hospital.find().select("name type tier trustScore acceptanceRate rejectionCount incentivePoints govRegistration alertLevel").lean();
+    res.json(hospitals.sort((a,b)=>b.trustScore-a.trustScore));
+  } catch(e){ res.status(500).json({ error:e.message }); }
+};
+
+// Resource staleness check and auto-alert
+exports.checkStaleness = async () => {
+  const SIX_HOURS = 6 * 60 * 60 * 1000;
+  const hospitals = await Hospital.find().lean();
+  const stale = hospitals.filter(h => (Date.now()-new Date(h.lastUpdated||0)) > SIX_HOURS);
+  return stale.map(h=>({ _id:h._id, name:h.name, lastUpdated:h.lastUpdated, hoursStale:Math.round((Date.now()-new Date(h.lastUpdated||0))/3600000) }));
+};
+
+// Government integration stats
+exports.getGovStats = async (req, res) => {
+  try {
+    const hospitals = await Hospital.find().lean();
+    res.json({
+      total: hospitals.length,
+      ayushmanEmpanelled: hospitals.filter(h=>h.govRegistration?.ayushmanEmpanelled).length,
+      nhm:                hospitals.filter(h=>h.govRegistration?.nhm).length,
+      emergencyService:   hospitals.filter(h=>h.govRegistration?.emergencyService).length,
+      tier1:  hospitals.filter(h=>h.tier==="Tier1").length,
+      tier2:  hospitals.filter(h=>h.tier==="Tier2").length,
+      tier3:  hospitals.filter(h=>h.tier==="Tier3").length,
+      avgTrustScore: Math.round(hospitals.reduce((a,h)=>a+(h.trustScore||75),0)/Math.max(1,hospitals.length)),
+    });
+  } catch(e){ res.status(500).json({ error:e.message }); }
+};

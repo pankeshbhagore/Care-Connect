@@ -1,12 +1,14 @@
-const Ambulance = require("../models/Ambulance");
-const Hospital  = require("../models/Hospital");
+const Ambulance  = require("../models/Ambulance");
+const Hospital   = require("../models/Hospital");
+const routeOpt   = require("../services/routeOptimizer");
+const ambSim     = require("../services/ambulanceSimulator");
 
 exports.getAll = async (req, res) => {
   try {
     const filter = {};
     if (req.query.status)   filter.status = req.query.status;
     if (req.query.hospital) filter.hospital = req.query.hospital;
-    const list = await Ambulance.find(filter).populate("hospital","name location.city").lean();
+    const list = await Ambulance.find(filter).populate("hospital","name location.city location.lat location.lng").lean();
     res.json(list);
   } catch (e) { res.status(500).json({ error: e.message }); }
 };
@@ -38,7 +40,6 @@ exports.update = async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 };
 
-// Live GPS location update
 exports.updateLocation = async (req, res) => {
   try {
     const { lat, lng, address, speed } = req.body;
@@ -50,6 +51,50 @@ exports.updateLocation = async (req, res) => {
     req.app.get("io")?.emit("ambulanceLocation", { id: a._id, ambulanceId: a.ambulanceId, lat, lng, status: a.status, speed: a.speed });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+};
+
+// ── NEW: Dispatch with full route simulation ──────────────────
+exports.dispatch = async (req, res) => {
+  try {
+    const amb = await Ambulance.findById(req.params.id);
+    if (!amb) return res.status(404).json({ message: "Not found" });
+    const { targetLat, targetLng, emergencyRequestId, priority } = req.body;
+    if (!targetLat || !targetLng) return res.status(400).json({ message: "targetLat, targetLng required" });
+
+    // Get route from OSRM
+    const routeResult = await routeOpt.getOptimizedRoute(
+      amb.location.lat, amb.location.lng,
+      parseFloat(targetLat), parseFloat(targetLng)
+    );
+    const route = routeResult ? {
+      coords: routeResult.geometry,
+      distanceKm: parseFloat((routeResult.distance/1000).toFixed(1)),
+      durationMin: Math.round(routeResult.duration/60),
+    } : null;
+
+    amb.status = "Dispatched";
+    await amb.save();
+
+    const io = req.app.get("io");
+    io?.emit("ambulanceUpdate", amb.toObject());
+
+    // Start simulation in background
+    if (route?.coords?.length > 1) {
+      ambSim.simulate(io, amb.ambulanceId, emergencyRequestId||"demo", route.coords, priority||"High");
+    }
+
+    res.json({ ok: true, ambulance: amb, route: { distanceKm: route?.distanceKm, durationMin: route?.durationMin, points: route?.coords?.length } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+};
+
+// ── Stats summary ─────────────────────────────────────────────
+exports.getStats = async (req, res) => {
+  try {
+    const all = await Ambulance.find().lean();
+    const byStatus = {};
+    for (const a of all) byStatus[a.status] = (byStatus[a.status]||0)+1;
+    res.json({ total: all.length, byStatus, activeSimulations: ambSim.activeCount() });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 };
 
 exports.remove = async (req, res) => {

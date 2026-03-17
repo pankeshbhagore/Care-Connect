@@ -217,3 +217,19 @@ exports.findOptimalVehicle = async (vehicles, toLat, toLng) => {
   }
   return best;
 };
+
+// ── Export getRoute for ambulanceController ───────────────────
+exports.getRoute = async (fromLat, fromLng, toLat, toLng) => {
+  try {
+    const result = await module.exports.optimizeRoute ? 
+      module.exports.optimizeRoute({ lat:fromLat, lng:fromLng }, { lat:toLat, lng:toLng }) :
+      null;
+    return result;
+  } catch(e) {
+    // Return fallback curved path
+    const coords = smartCurvedFallbackExported(fromLat, fromLng, toLat, toLng);
+    const calcDistance = require("../utils/distance");
+    const dist = calcDistance(fromLat, fromLng, toLat, toLng);
+    return { coords, distanceKm: parseFloat(dist.toFixed(1)), durationMin: Math.round(dist/60*60) };
+  }
+};

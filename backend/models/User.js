@@ -11,7 +11,7 @@ const userSchema = new mongoose.Schema({
   name:     { type:String, required:true, trim:true },
   email:    { type:String, required:true, unique:true, lowercase:true, trim:true },
   password: { type:String, required:true },
-  role:     { type:String, enum:["Admin","CentralAuthority","HospitalOperator","AmbulanceOperator","Citizen"], default:"Citizen" },
+  role:     { type:String, enum:["Admin","HospitalOperator","AmbulanceOperator","Citizen"], default:"Citizen" },
   // For hospital operators - which hospital they manage
   hospitalId: { type:mongoose.Schema.Types.ObjectId, ref:"Hospital", default:null },
   // For ambulance operators - which ambulance they drive

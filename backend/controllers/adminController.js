@@ -59,7 +59,7 @@ exports.getStats = async (req, res) => {
   try {
     const [users, hospitals] = await Promise.all([User.find().lean(), Hospital.find().lean()]);
     res.json({
-      users:{ total:users.length, admins:users.filter(u=>u.role==="Admin").length, centralAuth:users.filter(u=>u.role==="CentralAuthority").length, hospitalOps:users.filter(u=>u.role==="HospitalOperator").length, ambulanceOps:users.filter(u=>u.role==="AmbulanceOperator").length, operators:users.filter(u=>u.role==="Operator").length, citizens:users.filter(u=>u.role==="Citizen").length },
+      users:{ total:users.length, admins:users.filter(u=>u.role==="Admin").length, hospitalOps:users.filter(u=>u.role==="HospitalOperator").length, ambulanceOps:users.filter(u=>u.role==="AmbulanceOperator").length, citizens:users.filter(u=>u.role==="Citizen").length },
       hospitals:{ total:hospitals.length, active:hospitals.filter(h=>h.status==="Active").length, overwhelmed:hospitals.filter(h=>h.status==="Overwhelmed").length },
     });
   } catch(e){ res.status(500).json({ error:e.message }); }
