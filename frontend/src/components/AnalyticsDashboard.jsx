@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell,
   ScatterChart, Scatter,
+  AreaChart, Area,
   ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ReferenceLine
 } from "recharts";
@@ -415,6 +416,27 @@ export default function AnalyticsDashboard() {
                 ))}
               </div>
             </div>
+          </div>
+          {/* Resource Utilization Area Chart */}
+          <div className="card" style={{marginTop:16}}>
+            <div style={{fontFamily:"var(--font-mono)",fontSize:10,color:"var(--text-muted)",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:14,fontWeight:600}}>📈 RESOURCE UTILIZATION % — FREQUENCY GRAPH</div>
+            <ResponsiveContainer width="100%" height={280}>
+              <AreaChart data={(hospitals||[]).slice(0,10).map(h=>({
+                name:(h.name||"").split(" ").slice(0,2).join(" "),
+                icuUtil:Math.round(((h.resources?.icuBeds?.total-(h.resources?.icuBeds?.available||0))/Math.max(1,h.resources?.icuBeds?.total||1))*100),
+                ventUtil:Math.round(((h.resources?.ventilators?.total-(h.resources?.ventilators?.available||0))/Math.max(1,h.resources?.ventilators?.total||1))*100),
+                oxygenLevel:h.resources?.oxygenLevel||0,
+              }))}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)"/>
+                <XAxis dataKey="name" tick={{fill:"var(--text-muted)",fontSize:10}} axisLine={{stroke:"var(--border)"}} angle={-15} textAnchor="end" height={50}/>
+                <YAxis tick={{fill:"var(--text-muted)",fontSize:11}} axisLine={{stroke:"var(--border)"}} domain={[0,100]} unit="%"/>
+                <Tooltip contentStyle={{background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:8,color:"var(--text-primary)"}} formatter={v=>`${v}%`}/>
+                <Area type="monotone" dataKey="icuUtil"    name="ICU Utilization"        stroke="#ff4060" fill="rgba(255,64,96,.12)"  strokeWidth={2}/>
+                <Area type="monotone" dataKey="ventUtil"   name="Ventilator Utilization" stroke="#ff8f00" fill="rgba(255,143,0,.12)"  strokeWidth={2}/>
+                <Area type="monotone" dataKey="oxygenLevel" name="Oxygen Level"          stroke="#00c8ff" fill="rgba(0,200,255,.10)"  strokeWidth={2}/>
+                <Legend wrapperStyle={{color:"var(--text-muted)",fontSize:12}}/>
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
         </>
       )}

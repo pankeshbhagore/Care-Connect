@@ -1,8 +1,4 @@
-/**
- * LiveTrackingMap — Delivery-app style ambulance tracking
- * Shows: ambulance moving in real-time, route line, patient marker, hospital marker
- * With: ETA countdown, progress bar, status updates
- */
+
 import { useState, useEffect, useRef, useCallback } from "react";
 import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, useMap } from "react-leaflet";
 import L from "leaflet";

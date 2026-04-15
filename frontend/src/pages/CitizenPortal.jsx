@@ -5,7 +5,7 @@ import "leaflet/dist/leaflet.css";
 import api from "../services/api";
 import socket from "../services/socket";
 import { reverseGeocode, forwardGeocode } from "../services/geocode";
-import AIChatbot from "../components/AIChatBot";
+import AIChatbot from "../components/AIChatbot";
 import LiveTrackingMap from "../components/LiveTrackingMap";
 import { AppointmentModal } from "../components/AppointmentBooking";
 
@@ -87,119 +87,143 @@ function LocationSearch({onSelect}) {
   );
 }
 
-function EmergencyForm({onClose,onSubmit,userLocation,preferredHospital}) {
-  const [step,setStep]=useState(1);
-  const [f,setF]=useState({type:"Other",severity:"High",patientName:"",patientAge:"",patientPhone:"",description:"",address:"",locationName:"",lat:userLocation?.lat||"",lng:userLocation?.lng||"",requiredFacilities:[],reporterName:"",reporterPhone:""});
-  const [submitting,setSubmitting]=useState(false);const [locating,setLocating]=useState(false);const [aiWarn,setAiWarn]=useState("");const [locName,setLocName]=useState(userLocation?.name||"");
-  const s=(k,v)=>setF(p=>({...p,[k]:v}));
-  const toggleFac=fc=>setF(p=>({...p,requiredFacilities:p.requiredFacilities.includes(fc)?p.requiredFacilities.filter(x=>x!==fc):[...p.requiredFacilities,fc]}));
+// ── FIXED EmergencyForm: single step, auto GPS, name+phone optional ──
+function EmergencyForm({onClose, onSubmit, userLocation}) {
+  const [f, setF] = useState({
+    type:"Other", severity:"High", description:"",
+    address:"", locationName:"", lat:"", lng:"",
+    reporterName:"", reporterPhone:"",
+  });
+  const [locating, setLocating]     = useState(false);
+  const [locName,  setLocName]      = useState("");
+  const [aiWarn,   setAiWarn]       = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [locError, setLocError]     = useState("");
+  const s = (k,v) => setF(p=>({...p,[k]:v}));
 
-  const checkAI=desc=>{
+  // Auto-detect location immediately when form opens
+  useEffect(() => {
+    if (userLocation?.lat && userLocation?.lng) {
+      s("lat", userLocation.lat.toFixed(6));
+      s("lng", userLocation.lng.toFixed(6));
+      reverseGeocode(userLocation.lat, userLocation.lng).then(g => {
+        const name = g?.short || (userLocation.lat.toFixed(4)+", "+userLocation.lng.toFixed(4));
+        s("locationName", name); s("address", g?.full || name); setLocName(name);
+      }).catch(()=>{});
+    } else {
+      detectGPS();
+    }
+  }, []);
+
+  const detectGPS = () => {
+    setLocating(true); setLocError("");
+    if (!navigator.geolocation) {
+      setLocError("GPS not available. Search your address below."); setLocating(false); return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      async pos => {
+        const {latitude:lat, longitude:lng} = pos.coords;
+        s("lat", lat.toFixed(6)); s("lng", lng.toFixed(6)); setLocating(false);
+        try {
+          const g = await reverseGeocode(lat, lng);
+          const name = g?.short || (lat.toFixed(4)+", "+lng.toFixed(4));
+          s("locationName", name); s("address", g?.full || name); setLocName(name);
+        } catch(e) { setLocName(lat.toFixed(4)+", "+lng.toFixed(4)); }
+      },
+      () => { setLocating(false); setLocError("GPS denied. Search your address below."); },
+      { enableHighAccuracy:true, timeout:10000 }
+    );
+  };
+
+  const checkAI = desc => {
     const d=(desc||"").toLowerCase();
-    if(CRIT_KW.some(k=>d.includes(k)))setAiWarn("AI Triage: Description suggests CRITICAL. Severity will be auto-upgraded.");
-    else if(HIGH_KW.some(k=>d.includes(k))&&f.severity==="Low")setAiWarn("AI Triage: Suggests HIGH severity. Consider upgrading.");
+    if(CRIT_KW.some(k=>d.includes(k))) setAiWarn("AI Triage: CRITICAL detected — severity auto-upgraded.");
+    else if(HIGH_KW.some(k=>d.includes(k))&&f.severity==="Low") setAiWarn("AI Triage: Suggests HIGH severity.");
     else setAiWarn("");
   };
 
-  const getGPS=()=>{
-    setLocating(true);
-    navigator.geolocation?.getCurrentPosition(async pos=>{
-      const {latitude:lat,longitude:lng}=pos.coords;
-      s("lat",lat.toFixed(6));s("lng",lng.toFixed(6));setLocating(false);
-      try{const g=await reverseGeocode(lat,lng);s("locationName",g.short);s("address",g.full);setLocName(g.short);}catch(e){}
-    },()=>{setLocating(false);alert("GPS unavailable. Enter location manually.");},{enableHighAccuracy:true});
-  };
-
-  const submit=async()=>{
+  const submit = async () => {
+    if (!f.lat || !f.lng) { alert("Location required. Detect GPS or search address."); return; }
     setSubmitting(true);
-    try{const r=await onSubmit(f);return r;}
-    catch(e){alert("Error: "+e.message);setSubmitting(false);}
+    try { await onSubmit(f); } catch(e) { alert("Error: "+e.message); setSubmitting(false); }
   };
 
-  const TYPES=[["Cardiac","🫀"],["Stroke","🧠"],["Trauma","🤕"],["Respiratory","💨"],["Obstetric","🤱"],["Pediatric","👶"],["Burns","🔥"],["Other","⚕️"]];
-  const FACS=[["ICU","🛏"],["Ventilator","💨"],["BloodBank","🩸"],["Trauma","🚑"]];
+  const TYPES=[["Cardiac","\u{1FAC0}"],["Stroke","\u{1F9E0}"],["Trauma","\u{1F915}"],["Respiratory","\u{1F4A8}"],["Obstetric","\u{1F931}"],["Pediatric","\u{1F476}"],["Burns","\u{1F525}"],["Other","\u{2695}\uFE0F"]];
 
   return(
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:540,maxHeight:"90vh",overflowY:"auto"}}>
-        <div style={{background:"var(--red-dim)",border:"1px solid var(--red)",borderRadius:"var(--radius-md)",padding:"10px 14px",marginBottom:14,display:"flex",gap:10,alignItems:"center"}}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520,maxHeight:"92vh",overflowY:"auto"}}>
+        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+
+        {/* Header */}
+        <div style={{background:"var(--red-dim)",border:"1px solid var(--red)",borderRadius:"var(--radius-md)",padding:"12px 16px",marginBottom:16,display:"flex",gap:10,alignItems:"center"}}>
           <span style={{fontSize:22}}>🚨</span>
-          <div>
-            <div style={{fontFamily:"var(--font-display)",fontWeight:700,color:"var(--red)",fontSize:14}}>Emergency Ambulance Request</div>
+          <div style={{flex:1}}>
+            <div style={{fontFamily:"var(--font-display)",fontWeight:700,color:"var(--red)",fontSize:15}}>Emergency Ambulance Request</div>
             <div style={{fontSize:11,color:"var(--text-muted)"}}>AI dispatches nearest ambulance · No login required</div>
           </div>
-          <button className="btn btn-ghost btn-sm" onClick={onClose} style={{marginLeft:"auto"}}>✕</button>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
         </div>
 
-        {step===1&&<>
-          <div style={{marginBottom:14}}>
-            <label className="form-label">Emergency Type *</label>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6}}>
-              {TYPES.map(([t,i])=>(<button key={t} type="button" onClick={()=>s("type",t)} style={{padding:"9px 5px",border:`2px solid ${f.type===t?"var(--red)":"var(--border)"}`,background:f.type===t?"var(--red-dim)":"var(--bg-elevated)",color:f.type===t?"var(--red)":"var(--text-secondary)",borderRadius:"var(--radius-md)",cursor:"pointer",fontSize:11,textAlign:"center"}}><div style={{fontSize:18,marginBottom:2}}>{i}</div>{t}</button>))}
+        {/* Location */}
+        <div style={{background:"var(--bg-elevated)",border:"1px solid var(--border)",borderRadius:"var(--radius-md)",padding:14,marginBottom:16}}>
+          <div style={{fontFamily:"var(--font-display)",fontWeight:600,fontSize:11,color:"var(--text-secondary)",marginBottom:10,textTransform:"uppercase",letterSpacing:"0.5px"}}>📍 Your Location *</div>
+          {locating&&(
+            <div style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",color:"var(--accent)",fontSize:13}}>
+              <span style={{display:"inline-block",width:14,height:14,border:"2px solid var(--accent)",borderTopColor:"transparent",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+              Detecting your location...
             </div>
-          </div>
-          <div style={{marginBottom:14}}>
-            <label className="form-label">Severity</label>
-            <div style={{display:"flex",gap:8}}>
-              {["Critical","High","Medium","Low"].map(sv=>(<button key={sv} type="button" onClick={()=>s("severity",sv)} style={{flex:1,padding:"8px",border:`2px solid ${f.severity===sv?SEV_C[sv]:"var(--border)"}`,background:f.severity===sv?`${SEV_C[sv]}18`:"var(--bg-elevated)",color:f.severity===sv?SEV_C[sv]:"var(--text-muted)",borderRadius:"var(--radius-md)",cursor:"pointer",fontSize:12,fontWeight:f.severity===sv?700:400}}>{sv}</button>))}
+          )}
+          {locName&&!locating&&(
+            <div style={{background:"var(--green-dim)",border:"1px solid var(--green)",borderRadius:"var(--radius-md)",padding:"8px 12px",marginBottom:10,fontSize:13,color:"var(--green)",display:"flex",alignItems:"center",gap:8}}>
+              <span>📍</span>
+              <span style={{flex:1,fontWeight:500}}>{locName}</span>
+              <button onClick={detectGPS} style={{background:"none",border:"none",cursor:"pointer",color:"var(--green)",fontSize:11,textDecoration:"underline"}}>Refresh</button>
             </div>
-          </div>
-          <div style={{marginBottom:14}}>
-            <label className="form-label">Description (AI triage based on this)</label>
-            <textarea className="input" rows={2} value={f.description} onChange={e=>{s("description",e.target.value);checkAI(e.target.value);}} placeholder="Describe symptoms — e.g. unconscious, chest pain, not breathing..."/>
-            {aiWarn&&<div style={{fontSize:11,color:"var(--orange)",marginTop:5,background:"var(--orange-dim)",padding:"6px 10px",borderRadius:"var(--radius-sm)"}}>🤖 {aiWarn}</div>}
-          </div>
-          <div style={{marginBottom:14}}>
-            <label className="form-label">Required Facilities</label>
-            <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
-              {FACS.map(([fc,i])=>(<button key={fc} type="button" onClick={()=>toggleFac(fc)} style={{padding:"5px 12px",border:`1px solid ${f.requiredFacilities.includes(fc)?"var(--accent)":"var(--border)"}`,background:f.requiredFacilities.includes(fc)?"var(--accent-dim)":"var(--bg-elevated)",color:f.requiredFacilities.includes(fc)?"var(--accent)":"var(--text-secondary)",borderRadius:"var(--radius-md)",cursor:"pointer",fontSize:12}}>{i} {fc}</button>))}
+          )}
+          {locError&&!locating&&(
+            <div style={{background:"var(--orange-dim)",border:"1px solid var(--orange)",borderRadius:"var(--radius-md)",padding:"8px 12px",marginBottom:10,fontSize:12,color:"var(--orange)"}}>
+              ⚠️ {locError}
             </div>
-          </div>
-          <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
-            <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-            <button className="btn btn-primary" onClick={()=>setStep(2)}>Next: Location →</button>
-          </div>
-        </>}
-
-        {step===2&&<>
-          {f.preferredHospitalName&&<div style={{background:"var(--accent-dim)",border:"1px solid rgba(0,200,255,.2)",borderRadius:"var(--radius-md)",padding:"10px 14px",marginBottom:12,fontSize:12,color:"var(--text-secondary)"}}><b style={{color:"var(--accent)"}}>🏥 Preferred Hospital:</b> {f.preferredHospitalName} <button type="button" style={{background:"none",border:"none",color:"var(--text-muted)",cursor:"pointer",fontSize:11}} onClick={()=>s("preferredHospitalId","")}>✕ Remove</button></div>}
-          <button className="btn btn-primary btn-sm" onClick={getGPS} disabled={locating} style={{width:"100%",justifyContent:"center",padding:"11px",marginBottom:12,fontSize:14}}>
-            {locating?"Detecting GPS...":"📍 Auto-Detect My Location"}
-          </button>
-          {locName&&<div style={{background:"var(--green-dim)",border:"1px solid var(--green)",borderRadius:"var(--radius-md)",padding:"8px 12px",marginBottom:10,fontSize:12,color:"var(--green)"}}>📍 {locName}</div>}
-          <div style={{marginBottom:10}}>
-            <label className="form-label">Or Search Address</label>
-            <LocationSearch onSelect={(lat,lng,name)=>{s("lat",lat.toFixed(6));s("lng",lng.toFixed(6));s("locationName",name);setLocName(name);}}/>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
-            <div><label className="form-label">Latitude *</label><input className="input" type="number" step="0.000001" value={f.lat} onChange={e=>s("lat",e.target.value)} required/></div>
-            <div><label className="form-label">Longitude *</label><input className="input" type="number" step="0.000001" value={f.lng} onChange={e=>s("lng",e.target.value)} required/></div>
-          </div>
-          <div style={{marginBottom:10}}><label className="form-label">Address / Landmark</label><input className="input" value={f.address} onChange={e=>s("address",e.target.value)} placeholder="Near XYZ, opposite ABC..."/></div>
-          <div style={{background:"var(--bg-elevated)",border:"1px solid var(--border)",borderRadius:"var(--radius-sm)",padding:"8px 12px",fontSize:11,color:"var(--text-muted)",marginBottom:12}}>
-            GPS not working? Get coordinates from Google Maps: long press on location, copy lat/lng
-          </div>
-          <div style={{marginBottom:10}}>
-            <label className="form-label">Patient Details (optional)</label>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-              <input className="input" value={f.patientName} onChange={e=>s("patientName",e.target.value)} placeholder="Patient name (optional)"/>
-              <input className="input" type="number" value={f.patientAge} onChange={e=>s("patientAge",e.target.value)} placeholder="Age"/>
-            </div>
-          </div>
-          <div style={{marginBottom:14}}>
-            <label className="form-label">Your Contact (for ambulance driver)</label>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-              <input className="input" value={f.reporterName} onChange={e=>s("reporterName",e.target.value)} placeholder="Your name"/>
-              <input className="input" value={f.reporterPhone} onChange={e=>s("reporterPhone",e.target.value)} placeholder="Your phone (required)" required/>
-            </div>
-          </div>
-          <div style={{display:"flex",gap:10,justifyContent:"space-between",marginTop:16}}>
-            <button className="btn btn-ghost" onClick={()=>setStep(1)}>Back</button>
-            <button className="btn btn-primary" style={{background:"var(--red)",borderColor:"var(--red)",padding:"11px 24px",fontSize:14,fontWeight:700}} onClick={submit} disabled={submitting||!f.lat||!f.lng}>
-              {submitting?"Sending...":"Request Ambulance NOW"}
+          )}
+          {!locName&&!locating&&(
+            <button className="btn btn-primary btn-sm" onClick={detectGPS} style={{width:"100%",justifyContent:"center",marginBottom:10,padding:"10px"}}>
+              📍 Detect My Location (GPS)
             </button>
+          )}
+          <div style={{marginBottom:10}}>
+            <label className="form-label" style={{fontSize:11}}>Or search address / landmark</label>
+            <LocationSearch onSelect={(lat,lng,name)=>{s("lat",lat.toFixed(6));s("lng",lng.toFixed(6));s("locationName",name);s("address",name);setLocName(name);setLocError("");}}/>
           </div>
-        </>}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <div><label className="form-label" style={{fontSize:11}}>Latitude</label><input className="input" type="number" step="0.000001" value={f.lat} onChange={e=>s("lat",e.target.value)} placeholder="auto-detected"/></div>
+            <div><label className="form-label" style={{fontSize:11}}>Longitude</label><input className="input" type="number" step="0.000001" value={f.lng} onChange={e=>s("lng",e.target.value)} placeholder="auto-detected"/></div>
+          </div>
+        </div>
+
+        {/* Description */}
+        <div style={{marginBottom:14}}>
+          <label className="form-label">Description <span style={{color:"var(--text-dim)",fontWeight:400,fontSize:11}}>(optional — helps AI triage)</span></label>
+          <textarea className="input" rows={2} value={f.description} onChange={e=>{s("description",e.target.value);checkAI(e.target.value);}} placeholder="e.g. unconscious, chest pain, not breathing..."/>
+          {aiWarn&&<div style={{fontSize:11,color:"var(--orange)",marginTop:5,background:"var(--orange-dim)",padding:"6px 10px",borderRadius:"var(--radius-sm)"}}>🤖 {aiWarn}</div>}
+        </div>
+
+        {/* Contact — both optional */}
+        <div style={{marginBottom:16}}>
+          <label className="form-label">Your Contact <span style={{color:"var(--text-dim)",fontWeight:400,fontSize:11}}>(optional)</span></label>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <input className="input" value={f.reporterName} onChange={e=>s("reporterName",e.target.value)} placeholder="Name (optional)"/>
+            <input className="input" type="tel" value={f.reporterPhone} onChange={e=>s("reporterPhone",e.target.value)} placeholder="Mobile (optional)"/>
+          </div>
+        </div>
+
+        {/* Submit */}
+        <button className="btn btn-primary" style={{width:"100%",justifyContent:"center",padding:"14px",fontSize:15,fontWeight:800,background:"var(--red)",borderColor:"var(--red)",letterSpacing:"0.5px",opacity:(!f.lat||!f.lng)?0.5:1}} onClick={submit} disabled={submitting||locating||!f.lat||!f.lng}>
+          {submitting?"Sending request...":locating?"Waiting for location...":"🚑  Request Ambulance NOW"}
+        </button>
+        {(!f.lat||!f.lng)&&!locating&&(
+          <div style={{textAlign:"center",fontSize:11,color:"var(--orange)",marginTop:8}}>Location required — detect GPS or search address above</div>
+        )}
       </div>
     </div>
   );

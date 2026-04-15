@@ -10,6 +10,7 @@ import TransfersPanel     from "./components/TransfersPanel.jsx";
 import EmergencyPanel     from "./components/EmergencyPanel.jsx";
 import AdminPanel         from "./components/AdminPanel.jsx";
 import AnalyticsDashboard from "./components/AnalyticsDashboard.jsx";
+import AmbulanceOperatorDashboard from "./pages/AmbulanceOperatorDashboard.jsx";
 import api    from "./services/api.js";
 import socket from "./services/socket.js";
 
@@ -174,6 +175,26 @@ export default function App() {
           </div>
         </header>
         <div className="content-area"><HospitalOperatorDashboard hospitalId={auth.hospitalId} onBack={logout}/></div>
+      </div>
+    );
+  }
+
+  // ── Ambulance Driver Dashboard ───────────────────────────────────
+  if(auth.token && auth.role==="AmbulanceOperator") {
+    return (
+      <div className="page-wrapper">
+        <header className="app-header">
+          <div className="header-brand">
+            <div style={{fontSize:22}}>🚑</div>
+            <div><div className="logo" style={{fontSize:14}}>AMBULANCE PORTAL</div><div className="tagline" style={{fontSize:9}}>{auth.name} · {clock.toLocaleTimeString()}</div></div>
+          </div>
+          <div className="header-actions">
+            <span className="role-pill" style={{background:"rgba(255,143,0,.12)",color:"var(--orange)",border:"1px solid rgba(255,143,0,.25)"}}>🚑 DRIVER</span>
+            <button className="theme-toggle" onClick={toggleTheme}/>
+            <button className="btn btn-ghost btn-sm" onClick={logout}>Logout</button>
+          </div>
+        </header>
+        <div className="content-area"><AmbulanceOperatorDashboard ambulanceId={auth.ambulanceId} onBack={logout}/></div>
       </div>
     );
   }

@@ -130,4 +130,4 @@ setInterval(async () => {
 }, 10000);
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => { console.log(`✅ Healthcare Platform v4 on port ${PORT}`); });
+server.listen(PORT, () => { console.log(`✅ Healthcare Platform on port ${PORT}`); });

@@ -5,6 +5,8 @@ import "leaflet/dist/leaflet.css";
 import api from "../services/api";
 import socket from "../services/socket";
 import { AppointmentsPanel } from "../components/AppointmentBooking";
+import TransfersPanel from "../components/TransfersPanel";
+import StatsRow from "../components/StatsRow";
 
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -272,6 +274,93 @@ function OtherHospitalsResources({ currentHospitalId }) {
 }
 
 // ── MAIN DASHBOARD ────────────────────────────────────────────
+
+// ── Patients Tab (from reference project) ────────────────────────────
+function PatientsTab({ hospitalId }) {
+  const [patients, setPatients] = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [wardFilter, setWardFilter] = useState("All");
+  const [search, setSearch] = useState("");
+
+  useEffect(()=>{
+    api.get(`/appointments/hospital/${hospitalId}`)
+      .then(r=>{
+        // Convert appointments to a patient-like list
+        const pts = (r.data||[]).filter(a=>a.status==="approved"||a.status==="pending").map(a=>({
+          id:a._id, name:a.patientName||"Unknown", age:a.patientAge||"—",
+          ward:a.appointmentType||"General", condition:"Scheduled",
+          doctor:"Assigned", admittedAgo: new Date(a.createdAt||Date.now()).toLocaleDateString(),
+          status:a.status,
+        }));
+        setPatients(pts);
+      }).catch(()=>setPatients([]))
+      .finally(()=>setLoading(false));
+  },[hospitalId]);
+
+  const condBadge = (c,s) => {
+    const color = s==="approved"?"var(--green)":s==="pending"?"var(--yellow)":"var(--text-muted)";
+    return <span style={{fontSize:10,padding:"2px 8px",borderRadius:10,background:`${color}22`,color,border:`1px solid ${color}44`,fontWeight:600}}>{s?.toUpperCase()||c}</span>;
+  };
+
+  const filtered = patients.filter(p=>{
+    if(wardFilter!=="All"&&p.ward!==wardFilter)return false;
+    if(search&&!p.name.toLowerCase().includes(search.toLowerCase()))return false;
+    return true;
+  });
+
+  if(loading) return <div style={{textAlign:"center",padding:60,color:"var(--text-muted)"}}>Loading patients…</div>;
+
+  return(
+    <div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:16}}>👥</span>
+          <span style={{fontFamily:"var(--font-display)",fontWeight:700,fontSize:15,color:"var(--text-primary)"}}>Admitted / Scheduled Patients</span>
+          <span style={{fontSize:11,background:"var(--bg-elevated)",border:"1px solid var(--border)",borderRadius:20,padding:"2px 10px",color:"var(--text-secondary)"}}>{filtered.length}</span>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <select className="select" value={wardFilter} onChange={e=>setWardFilter(e.target.value)} style={{fontSize:12,padding:"5px 10px"}}>
+            <option value="All">All Wards</option>
+            <option>General</option><option>ICU</option><option>ER</option><option>Oxygen</option>
+          </select>
+          <input className="input" placeholder="Search patients…" value={search} onChange={e=>setSearch(e.target.value)} style={{width:160,fontSize:12,padding:"5px 10px"}}/>
+        </div>
+      </div>
+      {filtered.length===0?(
+        <div style={{textAlign:"center",padding:60,color:"var(--text-muted)"}}>
+          <div style={{fontSize:40,marginBottom:10}}>🏥</div>
+          No patients yet. Approved appointments will appear here.
+        </div>
+      ):(
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead>
+              <tr style={{borderBottom:"1px solid var(--border)"}}>
+                {["Patient","Age","Ward","Status","Scheduled"].map(h=>(
+                  <th key={h} style={{padding:"8px 12px",textAlign:"left",color:"var(--text-muted)",fontWeight:600,fontSize:11,textTransform:"uppercase",letterSpacing:"0.04em"}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(p=>(
+                <tr key={p.id} style={{borderBottom:"1px solid var(--border)",transition:"background .15s"}}
+                  onMouseEnter={e=>e.currentTarget.style.background="var(--bg-elevated)"}
+                  onMouseLeave={e=>e.currentTarget.style.background=""}>
+                  <td style={{padding:"10px 12px",fontWeight:600,color:"var(--text-primary)"}}>{p.name}</td>
+                  <td style={{padding:"10px 12px",color:"var(--text-secondary)"}}>{p.age}</td>
+                  <td style={{padding:"10px 12px"}}><span style={{fontSize:11,padding:"2px 8px",borderRadius:10,background:"var(--accent-dim)",color:"var(--accent)",border:"1px solid rgba(0,200,255,.2)"}}>{p.ward}</span></td>
+                  <td style={{padding:"10px 12px"}}>{condBadge(p.condition,p.status)}</td>
+                  <td style={{padding:"10px 12px",color:"var(--text-muted)",fontSize:11,fontFamily:"var(--font-mono)"}}>{p.admittedAgo}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function HospitalOperatorDashboard({ hospitalId, onBack }) {
   const [hospital,        setHospital]       = useState(null);
   const [emergencies,     setEmergencies]    = useState([]);
@@ -286,8 +375,17 @@ export default function HospitalOperatorDashboard({ hospitalId, onBack }) {
   const [incomingAlert,   setIncomingAlert]  = useState(null);
   const [resourceReminder,setResourceReminder]=useState(false);  // ← FIXED: declared here
   const [showDispatch,    setShowDispatch]   = useState(false);
+  const [pendingTransfers,setPendingTransfers] = useState(0);
 
   const showToast = (msg,type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null),4000); };
+
+  const loadPendingTransfers = useCallback(async()=>{
+    if(!hospitalId) return;
+    try{
+      const r = await api.get(`/transfers/stats?hospital=${hospitalId}`);
+      setPendingTransfers(r.data?.pending || 0);
+    }catch(e){}
+  },[hospitalId]);
 
   const loadHospital = useCallback(async()=>{
     if(!hospitalId) return;
@@ -308,6 +406,7 @@ export default function HospitalOperatorDashboard({ hospitalId, onBack }) {
   },[hospitalId]);
 
   useEffect(()=>{ loadHospital(); const t=setInterval(loadHospital,30000); return()=>clearInterval(t); },[loadHospital]);
+  useEffect(()=>{ loadPendingTransfers(); },[loadPendingTransfers]);
 
   // Resource reminder — check every 2 min, warn if stale >30 min
   useEffect(()=>{
@@ -329,6 +428,14 @@ export default function HospitalOperatorDashboard({ hospitalId, onBack }) {
     });
     socket.on(`hospital:${hospitalId}:alert`,d=>{ setIncomingAlert(d); showToast("🚨 "+d.message,"error"); });
     socket.on(`hospital:${hospitalId}:newAppointment`,d=>{ showToast(`📅 New appointment: ${d.appointment?.patientName}`); });
+    socket.on("newTransfer", d=>{
+      // Only show toast if this hospital is destination
+      if(d.toHospital===hospitalId || d.toHospitalId===hospitalId || d.toHospital?._id===hospitalId){
+        showToast(`🔄 Incoming transfer: ${d.patientName||"Patient"} from ${d.fromName||"another hospital"}`,"error");
+        loadPendingTransfers();
+      }
+    });
+    socket.on("transferUpdate", ()=>loadPendingTransfers());
     socket.on("emergencyUpdate",()=>loadHospital());
     socket.on("ambulanceSimStarted",()=>loadHospital());
     socket.on("ambulanceArrived",()=>loadHospital());
@@ -424,11 +531,14 @@ export default function HospitalOperatorDashboard({ hospitalId, onBack }) {
           ["emergencies","🚨 Emergencies"],
           ["appointments","📅 Appointments"],
           ["alerts","🔔 Alerts"],
+          ["transfers","🔄 Transfers"],
+          ["patients","👥 Patients"],
         ].map(([id,lbl])=>(
           <button key={id} className={`tab-btn ${tab===id?"active":""}`} onClick={()=>setTab(id)}>
             {lbl}
             {id==="alerts"&&alerts.length>0&&<span style={{display:"inline-flex",width:16,height:16,borderRadius:"50%",background:"var(--red)",color:"#fff",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,marginLeft:5}}>{alerts.length}</span>}
             {id==="emergencies"&&activeEmgs.length>0&&<span style={{display:"inline-flex",width:16,height:16,borderRadius:"50%",background:"var(--orange)",color:"#fff",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,marginLeft:5}}>{activeEmgs.length}</span>}
+            {id==="transfers"&&pendingTransfers>0&&<span style={{display:"inline-flex",width:16,height:16,borderRadius:"50%",background:"var(--yellow)",color:"#000",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,marginLeft:5}}>{pendingTransfers}</span>}
           </button>
         ))}
       </div>
@@ -436,6 +546,7 @@ export default function HospitalOperatorDashboard({ hospitalId, onBack }) {
       {/* ── DASHBOARD ─────────────────────────────────────────── */}
       {tab==="dashboard"&&(
         <>
+          <StatsRow hospitals={hospital?[hospital]:[]} emergencies={activeEmgs}/>
           <div className="stat-grid" style={{gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",marginBottom:20}}>
             <ResCard label="ICU Beds"     icon="🛏" available={r.icuBeds?.available||0}    total={r.icuBeds?.total||0}    color="var(--accent)"/>
             <ResCard label="General Beds" icon="🏨" available={r.generalBeds?.available||0} total={r.generalBeds?.total||0} color="var(--purple)"/>
@@ -574,6 +685,9 @@ export default function HospitalOperatorDashboard({ hospitalId, onBack }) {
           ))}
         </div>
       )}
+
+      {tab==="transfers"&&<TransfersPanel hospitalId={hospitalId}/>}
+      {tab==="patients"&&<PatientsTab hospitalId={hospitalId}/>}
 
       {/* Dispatch modal */}
       {showDispatch&&<DispatchModal hospitalId={hospitalId} onClose={()=>setShowDispatch(false)} onSuccess={()=>{loadHospital();showToast("Ambulance dispatched!");}}/>}
